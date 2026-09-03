@@ -1,7 +1,7 @@
 # Architecture
 
 - System Runtime: fnOS `nodejs_v24`（Studio/Coding Agents）与 `python312`（Hermes Agent）；FPK 不内置或修改系统运行时。
-- Hermes Agent: `$HOME/hermes-agent` is the official `NousResearch/hermes-agent` `main` Git worktree and its `venv` is an editable install. Manager bootstraps/migrates this layout with fnOS Python, then delegates later updates to `hermes update`; configuration remains under `$HOME/hermes-home`.
+- Hermes Agent: `$HOME/hermes-agent` is a relocatable editable Git install. The initial checkout is pinned by the bundled `EKKOLearnAI/hermes-studio` Runtime release metadata, built in a sibling staging directory with hash-locked dependencies, verified, and then renamed into place. Its local branch remains `main` so later updates delegate to `hermes update`; configuration remains under `$HOME/hermes-home`.
 - Bundled Runtime: `$HOME/runtime/studio/<version>`; Lite installs it lazily from Manager, Offline can recover from the embedded archive.
 - User Runtime: `$HOME/.npm-global`; Hermes Studio update and Codex/Pi/Claude global CLIs live here.
 - Bundled fnOS public tool: `.agents/skills/trim-cli` is the repository source; Lite/Offline payloads contain only its Linux x86_64/ARM64 binaries plus Skill documentation.

@@ -35,6 +35,16 @@ jobs:
             --header "X-GitHub-Api-Version: 2022-11-28" \
             --output latest-release.json \
             "https://api.github.com/repos/EKKOLearnAI/hermes-studio/releases/latest"
+          latest_tag="$(python3 -c 'import json; print(json.load(open("latest-release.json", encoding="utf-8"))["tag_name"])')"
+          curl \
+            --fail --location --silent --show-error \
+            --retry 5 --retry-all-errors --retry-delay 5 \
+            --connect-timeout 20 --max-time 120 \
+            --header "Accept: application/vnd.github.raw+json" \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            --output latest-hermes-agent-release.json \
+            "https://api.github.com/repos/EKKOLearnAI/hermes-studio/contents/packages/desktop/build/runtime-release.json?ref=${latest_tag}"
 
       - name: Fail when the Runtime pin is stale
         shell: bash
@@ -47,7 +57,9 @@ jobs:
 
           manifest = json.loads(pathlib.Path("config/runtime-manifest.json").read_text(encoding="utf-8"))
           pinned = str(manifest["studio"]["version"])
+          pinned_agent = manifest["hermesAgent"]
           release = json.loads(pathlib.Path("latest-release.json").read_text(encoding="utf-8"))
+          agent_release = json.loads(pathlib.Path("latest-hermes-agent-release.json").read_text(encoding="utf-8"))
 
           def semver(value):
               match = re.fullmatch(r"v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", value)
@@ -80,4 +92,17 @@ jobs:
               print(f"::warning title=Runtime pin is ahead::Pinned {pinned}; latest published Runtime is {latest}.")
           else:
               print(f"Runtime pin is current: {pinned}")
+
+          source = agent_release.get("hermesSource", {})
+          expected_agent = {
+              "version": agent_release.get("hermesAgentVersion"),
+              "repository": source.get("repository"),
+              "ref": source.get("ref"),
+              "commit": source.get("commit"),
+          }
+          actual_agent = {key: pinned_agent.get(key) for key in expected_agent}
+          if actual_agent != expected_agent:
+              print(f"::error title=Hermes Agent pin is stale::Pinned {actual_agent}; Studio release requires {expected_agent}.")
+              raise SystemExit(1)
+          print(f"Hermes Agent pin is current: {actual_agent['version']} ({actual_agent['ref']})")
           PY

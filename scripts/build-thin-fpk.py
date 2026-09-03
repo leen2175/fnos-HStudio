@@ -32,6 +32,7 @@ FPK_NAME = re.compile(r"(?:fnos-HStudio|HStudio)-(?:lite|offline)-v(.+)\.fpk$")
 TRIM_CLI_SKILL = ROOT / ".agents" / "skills" / "trim-cli"
 PROJECT_LICENSE = ROOT / "LICENSE"
 THIRD_PARTY_NOTICE = ROOT / "licenses" / "THIRD-PARTY-NOTICES.md"
+HERMES_AGENT_REQUIREMENTS = ROOT / "app" / "hermes-agent" / "requirements.txt"
 GITHUB_TIMEOUT_SECONDS = 30
 GITHUB_REQUEST_ATTEMPTS = 3
 RUNTIME_SMOKE_TIMEOUT_SECONDS = 60
@@ -537,6 +538,34 @@ def validate_license_file(studio: dict) -> tuple[Path, str]:
     return path, relative.as_posix()
 
 
+def validate_hermes_agent_release(package_manifest: dict) -> Path:
+    """Validate the Studio-owned Hermes Agent pin and generated dependency lock."""
+    agent = package_manifest.get("hermesAgent", {})
+    if not re.fullmatch(r"\d+\.\d+\.\d+", str(agent.get("version", ""))):
+        raise ValueError("Hermes Agent version pin is invalid")
+    if not re.fullmatch(r"EKKOLearnAI/hermes-studio@v\d+\.\d+\.\d+", str(agent.get("source", ""))):
+        raise ValueError("Hermes Agent pin must come from an EKKOLearnAI/hermes-studio release")
+    if agent.get("repository") != "https://github.com/NousResearch/hermes-agent.git":
+        raise ValueError("Hermes Agent repository is not the official HTTPS origin")
+    if agent.get("installMethod") != "git" or not str(agent.get("ref", "")):
+        raise ValueError("Hermes Agent Git source metadata is invalid")
+    if not re.fullmatch(r"[0-9a-f]{40}", str(agent.get("commit", ""))):
+        raise ValueError("Hermes Agent full commit pin is required")
+    expected_extras = ["all", "messaging", "slack", "matrix", "wecom", "dingtalk", "feishu"]
+    if agent.get("extras") != expected_extras:
+        raise ValueError("Hermes Agent extras differ from the Hermes Studio desktop runtime")
+    requirements = agent.get("requirements", {})
+    if requirements.get("path") != "hermes-agent/requirements.txt":
+        raise ValueError("Hermes Agent requirements path is invalid")
+    if not HERMES_AGENT_REQUIREMENTS.is_file():
+        raise FileNotFoundError(f"Hermes Agent requirements missing: {HERMES_AGENT_REQUIREMENTS}")
+    if HERMES_AGENT_REQUIREMENTS.stat().st_size != int(requirements.get("size", 0)):
+        raise ValueError("Hermes Agent requirements size drift")
+    if file_sha256(HERMES_AGENT_REQUIREMENTS) != str(requirements.get("sha256", "")).lower():
+        raise ValueError("Hermes Agent requirements checksum drift")
+    return HERMES_AGENT_REQUIREMENTS
+
+
 def _fetch_json(url: str) -> dict:
     headers = {
         "Accept": "application/vnd.github+json",
@@ -756,7 +785,7 @@ def refresh_artifacts_index(keep_versions: int = 3) -> None:
 def create_app_payload(variant: str, runtime: Path | None, package_manifest: dict) -> bytes:
     app_buffer = io.BytesIO()
     with deterministic_tar_gz(app_buffer) as tar:
-        for directory in ("bin", "ui"):
+        for directory in ("bin", "ui", "hermes-agent"):
             path = ROOT / "app" / directory
             if path.exists():
                 add_tree(tar, path, directory)
@@ -854,6 +883,7 @@ def validate_built_fpk(path: Path, variant: str, version: str, package_manifest:
                 "bin/hermes-web-ui",
                 "manager/backend/server.mjs",
                 "manager/frontend/index.html",
+                "hermes-agent/requirements.txt",
                 "skills/trim-cli/SKILL.md",
                 "skills/trim-cli/scripts/trim-cli",
                 "skills/trim-cli/bin/trim-cli-linux-x64",
@@ -885,6 +915,13 @@ def validate_built_fpk(path: Path, variant: str, version: str, package_manifest:
             license_sha256, _ = stream_sha256(license_stream)
             if license_sha256 != str(package_manifest["studio"]["licenseSha256"]).lower():
                 raise ValueError("packaged Runtime LICENSE differs from runtime-manifest.json")
+            requirements_stream = app.extractfile("hermes-agent/requirements.txt")
+            if requirements_stream is None:
+                raise ValueError("packaged Hermes Agent requirements are unreadable")
+            requirements_sha256, requirements_size = stream_sha256(requirements_stream)
+            requirements = package_manifest["hermesAgent"]["requirements"]
+            if requirements_size != int(requirements["size"]) or requirements_sha256 != str(requirements["sha256"]).lower():
+                raise ValueError("packaged Hermes Agent requirements differ from runtime-manifest.json")
             runtime_name = f"runtime/{package_manifest['studio']['archive']}"
             runtime_members = sorted(name for name in app_names if name.startswith("runtime/"))
             if variant == "lite":
@@ -974,6 +1011,7 @@ def build(
         (ROOT / "config/runtime-manifest.json").read_text(encoding="utf-8")
     )
     validate_license_file(package_manifest["studio"])
+    validate_hermes_agent_release(package_manifest)
     runtime = None
     if variant == "offline":
         if not verify_upstream_online and os.getenv("HSTUDIO_TESTING") != "1":

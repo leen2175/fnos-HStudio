@@ -12,7 +12,7 @@ python3 scripts/build-thin-fpk.py \
 
 Lite 不需要本地 Runtime archive。Offline 必须使用 `config/runtime-manifest.json` 锁定的官方 archive；缺失，或文件名、字节数、SHA-256、package version、单根目录布局、上游 tag/commit、Release metadata、LICENSE 任一不匹配时，构建立即失败且不生成占位包。Offline 构建还会联网确认 GitHub `releases/latest` 仍等于锁定版本，因此每次打包都不会悄悄内置过时 Runtime。
 
-两个变体都包含相同的 fnOS 适配层、Manager、许可证文件，以及 fnOS 官方公共工具 `trim-cli` 的最小 Linux payload。该 payload 仅包含 Linux x86_64/ARM64 CLI、wrapper 和 Skill；Node.js 与 Python 不进入任何 FPK，真机分别使用依赖应用 `nodejs_v24` 和 `python312`。
+两个变体都包含相同的 fnOS 适配层、Manager、许可证文件、Hermes Studio release 固定的 Hermes Agent 元数据和带 SHA-256 的 Python requirements，以及 fnOS 官方公共工具 `trim-cli` 的最小 Linux payload。该 payload 仅包含 Linux x86_64/ARM64 CLI、wrapper 和 Skill；Node.js、Python、Hermes Agent 源码与 wheels 不进入 FPK，真机分别使用依赖应用 `nodejs_v24` 和 `python312`。这里的 Offline 指 Studio Runtime 可离线恢复；Hermes Agent 首次安装仍需联网下载固定源码和依赖。
 
 输出为：
 

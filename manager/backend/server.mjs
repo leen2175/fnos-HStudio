@@ -27,7 +27,6 @@ const studioBinNames = Object.freeze(['hermes-web-ui','hermes-web-ui-mcp','herme
 const userGlobalRoot = path.join(data,'.npm-global')
 const hermesAgentRoot = process.env.HERMES_AGENT_ROOT || path.join(data,'hermes-agent')
 const hermesAgentVenv = path.join(hermesAgentRoot,'venv')
-const hermesAgentRepository = 'https://github.com/NousResearch/hermes-agent.git'
 const hermesAgentInstallState = path.join(data,'manager','hermes-agent.json')
 const npmLatestTtlMs = 5 * 60 * 1000
 const npmLatestFailureTtlMs = 30 * 1000
@@ -96,6 +95,37 @@ function studioUpdatePolicy(currentVersion,latestVersion) {
   const comparison=compareSemver(current.value,latest.value)
   return {currentVersion:current.value,latestVersion:latest.value,updateAvailable:comparison<0,reason:comparison<0?'update-available':comparison===0?'current':'ahead-of-registry'}
 }
+function validateHermesAgentRelease(value) {
+  const release=value&&typeof value==='object'?value:null
+  if(!release||!parseSemver(release.version))throw new Error('hermes_agent_release_version_invalid')
+  if(!/^EKKOLearnAI\/hermes-studio@v\d+\.\d+\.\d+$/.test(String(release.source||'')))throw new Error('hermes_agent_release_source_invalid')
+  if(!trustedHermesAgentOrigin(release.repository))throw new Error('hermes_agent_release_repository_invalid')
+  if(!String(release.ref||'').trim()||!/^[0-9a-f]{40}$/i.test(String(release.commit||'')))throw new Error('hermes_agent_release_git_pin_invalid')
+  if(release.installMethod!=='git')throw new Error('hermes_agent_release_method_invalid')
+  const extras=Array.isArray(release.extras)?release.extras.map(value=>String(value).trim()):[]
+  if(!extras.length||extras.some(value=>!/^[a-z0-9-]+$/.test(value)))throw new Error('hermes_agent_release_extras_invalid')
+  const requirements=release.requirements
+  if(!requirements||typeof requirements!=='object'||!String(requirements.path||'').trim()||!/^[0-9a-f]{64}$/i.test(String(requirements.sha256||''))||!Number.isSafeInteger(requirements.size)||requirements.size<=0)throw new Error('hermes_agent_requirements_metadata_invalid')
+  return {...release,version:parseSemver(release.version).value,repository:String(release.repository),ref:String(release.ref),commit:String(release.commit).toLowerCase(),extras,requirements:{path:String(requirements.path),sha256:String(requirements.sha256).toLowerCase(),size:requirements.size}}
+}
+function readHermesAgentRelease() {
+  let lastError
+  for(const file of metadataFiles('runtime-manifest.json')){try{
+    const release=validateHermesAgentRelease(JSON.parse(fs.readFileSync(file,'utf8')).hermesAgent)
+    const root=path.resolve(appRoot),requirementsPath=path.resolve(root,release.requirements.path)
+    if(requirementsPath!==root&&!requirementsPath.startsWith(root+path.sep))throw new Error('hermes_agent_requirements_path_invalid')
+    const bytes=fs.readFileSync(requirementsPath)
+    if(bytes.length!==release.requirements.size||createHash('sha256').update(bytes).digest('hex')!==release.requirements.sha256)throw new Error('hermes_agent_requirements_checksum_invalid')
+    return {...release,requirementsPath}
+  }catch(error){lastError=error}}
+  throw lastError||new Error('hermes_agent_release_missing')
+}
+function hermesAgentVersionPolicy(currentVersion,recommendedVersion) {
+  const current=parseSemver(versionFromText(currentVersion)),recommended=parseSemver(recommendedVersion)
+  if(!current||!recommended)return 'unknown'
+  const comparison=compareSemver(current.value,recommended.value)
+  return comparison<0?'behind':comparison>0?'ahead':'recommended'
+}
 function readJsonBody(req,res,callback){let body='',tooLarge=false;req.on('data',chunk=>{if(tooLarge)return;body+=chunk;if(Buffer.byteLength(body)>4096){tooLarge=true;body=''}});req.on('end',()=>{if(tooLarge)return json(res,413,{error:'request_too_large'});try{return callback(JSON.parse(body||'{}'))}catch{return json(res,400,{error:'invalid_json'})}})}
 const agentDefinitions = {
   codex: {name:'codex', label:'Codex', packageName:'@openai/codex'},
@@ -133,7 +163,26 @@ function pythonBin(){const candidates=[process.env.PYTHON_BIN,process.env.PYTHON
 function trustedHermesAgentOrigin(value){return /^https:\/\/github\.com\/NousResearch\/hermes-agent(?:\.git)?\/?$/i.test(String(value||'').trim())}
 function configuredHermesAgentOrigin(){try{const lines=fs.readFileSync(path.join(hermesAgentRoot,'.git','config'),'utf8').split(/\r?\n/);let origin=false;for(const line of lines){const section=line.trim().match(/^\[([^\]]+)\]$/)?.[1]||'';if(section){origin=/^remote\s+"origin"$/i.test(section);continue}if(origin){const value=line.match(/^\s*url\s*=\s*(.+?)\s*$/i)?.[1];if(value)return value}}}catch{}return ''}
 function hermesAgentManagedByHStudio(){try{const value=JSON.parse(fs.readFileSync(hermesAgentInstallState,'utf8'));return value?.schema===1&&path.resolve(String(value.root||''))===path.resolve(hermesAgentRoot)&&trustedHermesAgentOrigin(value.repository)}catch{return false}}
-function hermesAgentEnvironment(){const venvBin=path.join(hermesAgentVenv,'bin'),nodeRootBin=process.env.NODE_ROOT&&path.join(process.env.NODE_ROOT,'bin');return {...process.env,HOME:data,HERMES_HOME:path.join(data,'hermes-home'),HERMES_AGENT_ROOT:hermesAgentRoot,HERMES_SKIP_NODE_BOOTSTRAP:'1',PIP_CACHE_DIR:path.join(data,'.pip-cache'),PIP_DISABLE_PIP_VERSION_CHECK:'1',PIP_NO_INPUT:'1',PYTHONUNBUFFERED:'1',PATH:[venvBin,nodeRootBin,path.join(userGlobalRoot,'bin'),process.env.PATH].filter(Boolean).join(path.delimiter)}}
+function hermesAgentEnvironment(root=hermesAgentRoot){const venv=path.join(root,'venv'),venvBin=path.join(venv,'bin'),nodeRootBin=process.env.NODE_ROOT&&path.join(process.env.NODE_ROOT,'bin');return {...process.env,HOME:data,HERMES_HOME:path.join(data,'hermes-home'),HERMES_AGENT_ROOT:root,HERMES_SKIP_NODE_BOOTSTRAP:'1',PIP_CACHE_DIR:path.join(data,'.pip-cache'),PIP_DISABLE_PIP_VERSION_CHECK:'1',PIP_NO_INPUT:'1',PYTHONUNBUFFERED:'1',VIRTUAL_ENV:venv,UV_PROJECT_ENVIRONMENT:venv,PATH:[venvBin,nodeRootBin,path.join(userGlobalRoot,'bin'),process.env.PATH].filter(Boolean).join(path.delimiter)}}
+function hermesInstallDirectory(kind,id=randomUUID()){
+  if(!['stage','backup','failed'].includes(kind)||!/^[0-9a-f-]{36}$/i.test(id))throw new Error('invalid_hermes_install_directory')
+  return path.join(path.dirname(hermesAgentRoot),`.${path.basename(hermesAgentRoot)}.${kind}.${id}`)
+}
+function removeHermesInstallDirectory(directory){
+  const resolved=path.resolve(directory),parent=path.resolve(path.dirname(hermesAgentRoot)),name=path.basename(resolved),prefix=`.${path.basename(hermesAgentRoot)}.`
+  if(path.dirname(resolved)!==parent||!name.startsWith(prefix)||!/^\.[^.]+\.(?:stage|backup|failed)\.[0-9a-f-]{36}$/i.test(name))throw new Error('unsafe_hermes_install_cleanup')
+  fs.rmSync(resolved,{recursive:true,force:true})
+}
+function prepareHermesGitExcludes(root){
+  const file=path.join(root,'.git','info','exclude'),existing=fs.existsSync(file)?fs.readFileSync(file,'utf8'):'',lines=new Set(existing.split(/\r?\n/).filter(Boolean))
+  lines.add('/venv/');lines.add('/.install_method')
+  atomicWrite(file,[...lines].join('\n')+'\n',0o644)
+}
+function writeHermesLaunchers(root){
+  const bin=path.join(root,'venv','bin')
+  for(const [name,module] of [['hermes','hermes_cli.main'],['hermes-agent','run_agent'],['hermes-acp','acp_adapter.entry']])atomicWrite(path.join(bin,name),`#!/bin/sh\nVENV_BIN=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)\nexec "$VENV_BIN/python" -m ${module} "$@"\n`,0o755)
+}
+const hermesEditableRelocationScript=`from pathlib import Path\nimport os, sys\nroot = Path(sys.argv[1]).resolve()\nsite = list((root / "venv" / "lib").glob("python*/site-packages"))\nassert len(site) == 1, site\npths = list(site[0].glob("__editable__.hermes_agent-*.pth"))\nassert len(pths) == 1, pths\npths[0].write_text(os.path.relpath(root, site[0]) + "\\n", encoding="utf-8")\nfor direct_url in site[0].glob("hermes_agent-*.dist-info/direct_url.json"):\n    direct_url.unlink()\n`
 function fsyncDirectory(directory){if(process.platform==='win32')return;let fd;try{fd=fs.openSync(directory,'r');fs.fsyncSync(fd)}finally{if(fd!==undefined)fs.closeSync(fd)}}
 function atomicWrite(file,content,mode=0o600){const directory=path.dirname(file);fs.mkdirSync(directory,{recursive:true});const temporary=path.join(directory,`.${path.basename(file)}.${process.pid}.${randomUUID()}.tmp`);let fd;try{fd=fs.openSync(temporary,'wx',mode);fs.writeFileSync(fd,content);try{fs.fchmodSync(fd,mode)}catch{}fs.fsyncSync(fd);fs.closeSync(fd);fd=undefined;fs.renameSync(temporary,file);fsyncDirectory(directory)}finally{if(fd!==undefined)try{fs.closeSync(fd)}catch{};try{fs.unlinkSync(temporary)}catch{}}}
 function processAlive(pid,signal=process.kill){try{signal(pid,0);return true}catch{return false}}
@@ -222,8 +271,9 @@ async function executableVersion(command){if(!command)return '';try{const result
 function pythonVersionFromText(value){const match=String(value||'').match(/(?:^|\s)Python\s+(3)\.(\d+)(?:\.(\d+))?/i);return match?`${match[1]}.${match[2]}.${match[3]||'0'}`:''}
 function supportedPythonVersion(value){const parsed=pythonVersionFromText(value),minor=Number(parsed.split('.')[1]);return Boolean(parsed&&minor>=11&&minor<14)}
 async function pythonRuntime(){const command=pythonBin(),raw=await executableVersion(command),version=pythonVersionFromText(raw);return {available:Boolean(command&&supportedPythonVersion(raw)),path:command||'',version:version||raw||'未检测到版本',required:'Python 3.11–3.13（fnOS python312）'}}
+function hermesBrowserRuntime(){const agentBrowser=safeCommand('agent-browser'),chromium=[process.env.AGENT_BROWSER_EXECUTABLE_PATH,'chromium','chromium-browser','google-chrome','google-chrome-stable'].filter(Boolean).map(value=>path.isAbsolute(value)&&executableFile(value)?value:safeCommand(value)).find(Boolean)||'';const missing=[!agentBrowser&&'agent-browser',!chromium&&'Chromium'].filter(Boolean);return {available:missing.length===0,agentBrowser,chromium,status:missing.length?`缺少 ${missing.join('、')}`:'可用'}}
 function adapterStatus(def){if(!def.adapter)return {};const adapterRoot=path.join(data,'hermes-home','coding-agent','pi-mcp-adapter'),metadata=path.join(adapterRoot,'node_modules',def.adapter,'package.json');try{const value=JSON.parse(fs.readFileSync(metadata,'utf8'));if(value?.name!==def.adapter||!parseSemver(value?.version))throw new Error('invalid_adapter');return {adapter:def.adapter,adapterRoot,adapterInstalled:true,adapterVersion:value.version}}catch{return {adapter:def.adapter,adapterRoot,adapterInstalled:false,adapterVersion:''}}}
-async function hermesAgent(){const expected=path.join(hermesAgentVenv,'bin','hermes'),p=executableFile(expected)?expected:safeCommand('hermes'),v=await executableVersion(p),partial=fs.existsSync(hermesAgentVenv),gitManaged=hermesAgentManagedByHStudio()&&trustedHermesAgentOrigin(configuredHermesAgentOrigin())&&fs.existsSync(path.join(hermesAgentRoot,'pyproject.toml')),python=await pythonRuntime(),operation=operationsFor('hermes-agent')[0]||null,installed=Boolean(p);return {name:'hermes-agent',label:'Hermes Agent',installed,partial,gitManaged,updateMethod:gitManaged?'hermes update':'',path:p,root:hermesAgentRoot,version:v||'未检测到版本',status:operation?.status==='running'?'安装中':p?'可调用':partial?'安装不完整':'未安装',python,operation} }
+async function hermesAgent(){const expected=path.join(hermesAgentVenv,'bin','hermes'),p=executableFile(expected)?expected:safeCommand('hermes'),v=await executableVersion(p),partial=fs.existsSync(hermesAgentVenv),gitManaged=hermesAgentManagedByHStudio()&&trustedHermesAgentOrigin(configuredHermesAgentOrigin())&&fs.existsSync(path.join(hermesAgentRoot,'pyproject.toml')),python=await pythonRuntime(),operation=operationsFor('hermes-agent')[0]||null,installed=Boolean(p);let release=null,releaseError='';try{release=readHermesAgentRelease()}catch(error){releaseError=error?.message||'hermes_agent_release_invalid'}return {name:'hermes-agent',label:'Hermes Agent',installed,partial,gitManaged,updateMethod:gitManaged?'hermes update':'',path:p,root:hermesAgentRoot,version:v||'未检测到版本',recommendedVersion:release?.version||'',versionPolicy:release?hermesAgentVersionPolicy(v,release.version):'unknown',sourceRef:release?.ref||'',sourceCommit:release?.commit||'',releaseError,browser:hermesBrowserRuntime(),status:operation?.status==='running'?'安装中':p?'可调用':partial?'安装不完整':'未安装',python,operation} }
 async function agents(){return Promise.all(agentNames.map(async name=>{const def=agentDefinitions[name],p=safeCommand(name),version=await executableVersion(p),adapter=adapterStatus(def),installed=Boolean(p),ready=installed&&(!def.adapter||adapter.adapterInstalled);return {name,label:def.label,packageName:def.packageName,installed,ready,path:p,version,...adapter,operation:operationsFor(name)[0]||null}}))}
 function agentInventory(){if(agentInventoryPending)return agentInventoryPending;const pending=Promise.all([hermesAgent(),agents()]).then(([hermesAgentValue,agentValues])=>({hermesAgent:hermesAgentValue,agents:agentValues,operations:[...operations.values()].map(operationView)}));agentInventoryPending=pending;return pending.finally(()=>{if(agentInventoryPending===pending)agentInventoryPending=null})}
 function installAgent(name){
@@ -243,10 +293,11 @@ function installHermesAgent(){
   const existing=blockingNpmOperation();if(existing)return {error:'operation_running',operation:operationView(existing)}
   const command=pythonBin();if(!command)return {error:'python_runtime_missing',hint:'未检测到 fnOS python312；请确认系统已安装并启用 Python 3.12 运行时'}
   const git=safeCommand('git');if(!git)return {error:'git_runtime_missing',hint:'hermes update 需要 Git；当前 fnOS 环境未检测到 git 命令'}
-  const op=createOperation('hermes-agent-install','hermes-agent');op.phase='preparing';op.message='正在准备可由 hermes update 管理的安装'
-  ;(async()=>{try{
+  let release
+  try{release=readHermesAgentRelease()}catch(error){return {error:'hermes_agent_release_invalid',hint:error?.message||'Hermes Agent 固定版本或依赖锁校验失败'}}
+  const op=createOperation('hermes-agent-install','hermes-agent');op.phase='preparing';op.message='正在准备可由 hermes update 管理的安装';op.targetVersion=release.version
+  ;(async()=>{let stageRoot='',backupRoot='',failedRoot='',published=false,oldMoved=false;try{
     const runtime=await pythonRuntime();if(!runtime.available)throw new Error('python_version_unsupported')
-    fs.mkdirSync(hermesAgentRoot,{recursive:true,mode:0o700});try{fs.chmodSync(hermesAgentRoot,0o700)}catch{}
     const venvPython=path.join(hermesAgentVenv,'bin','python'),hermesCommand=path.join(hermesAgentVenv,'bin','hermes')
     const env=hermesAgentEnvironment(),gitDir=path.join(hermesAgentRoot,'.git'),projectFile=path.join(hermesAgentRoot,'pyproject.toml')
     let origin=''
@@ -254,25 +305,41 @@ function installHermesAgent(){
     if(origin&&!trustedHermesAgentOrigin(origin))throw new Error('hermes_agent_untrusted_origin')
     const canSelfUpdate=Boolean(hermesAgentManagedByHStudio()&&origin&&fs.existsSync(projectFile)&&executableFile(hermesCommand))
     if(canSelfUpdate){
+      op.beforeVersion=versionFromText(await executableVersion(hermesCommand))
       op.phase='hermes-update';op.message='正在执行官方 hermes update'
       await runCommand(op,hermesCommand,['update','--yes','--keep-stash'],{cwd:hermesAgentRoot,env,detached:true,timeoutMs:45*60*1000,npmMutation:true})
     }else{
-      op.phase='git';op.message='正在建立 Hermes Agent 官方 Git 工作树'
-      if(!fs.existsSync(gitDir))await runCommand(op,git,['init'],{cwd:hermesAgentRoot,env,detached:true,timeoutMs:60000,npmMutation:true})
-      if(!origin){await runCommand(op,git,['remote','add','origin',hermesAgentRepository],{cwd:hermesAgentRoot,env,detached:true,timeoutMs:60000,npmMutation:true});origin=hermesAgentRepository}
-      if(!trustedHermesAgentOrigin(origin))throw new Error('hermes_agent_untrusted_origin')
-      await runCommand(op,git,['fetch','--depth=1','origin','main'],{cwd:hermesAgentRoot,env,detached:true,timeoutMs:15*60*1000,npmMutation:true})
-      await runCommand(op,git,['checkout','-B','main','origin/main'],{cwd:hermesAgentRoot,env,detached:true,timeoutMs:5*60*1000,npmMutation:true})
-      atomicWrite(path.join(hermesAgentRoot,'.install_method'),'git\n')
-      if(!executableFile(venvPython)){op.phase='venv';op.message='正在创建 Hermes Agent 私有 Python 环境';await runCommand(op,command,['-m','venv',hermesAgentVenv],{cwd:hermesAgentRoot,env,detached:true,timeoutMs:5*60*1000,npmMutation:true})}
-      op.phase='editable-install';op.message='正在安装 Hermes Agent 官方 Git 版本'
-      await runCommand(op,venvPython,['-m','pip','install','--upgrade','--disable-pip-version-check','--no-input','--editable','.[all]'],{cwd:hermesAgentRoot,env,detached:true,timeoutMs:45*60*1000,npmMutation:true})
+      const id=randomUUID();stageRoot=hermesInstallDirectory('stage',id);backupRoot=hermesInstallDirectory('backup',id);failedRoot=hermesInstallDirectory('failed',id)
+      fs.mkdirSync(stageRoot,{recursive:false,mode:0o700});const stageVenv=path.join(stageRoot,'venv'),stagePython=path.join(stageVenv,'bin','python'),stageHermes=path.join(stageVenv,'bin','hermes'),stageEnv=hermesAgentEnvironment(stageRoot)
+      op.phase='git';op.message=`正在获取 Hermes Agent 推荐版本 ${release.version}`
+      await runCommand(op,git,['init'],{cwd:stageRoot,env:stageEnv,detached:true,timeoutMs:60000,npmMutation:true})
+      await runCommand(op,git,['remote','add','origin',release.repository],{cwd:stageRoot,env:stageEnv,detached:true,timeoutMs:60000,npmMutation:true})
+      await runCommand(op,git,['fetch','--depth=1','origin',release.ref],{cwd:stageRoot,env:stageEnv,detached:true,timeoutMs:15*60*1000,npmMutation:true})
+      const fetched=(await captureCommand(git,['rev-parse','FETCH_HEAD^{commit}'],{cwd:stageRoot,env:stageEnv,timeoutMs:10000})).stdout.trim().toLowerCase();if(fetched!==release.commit)throw new Error('hermes_agent_commit_mismatch')
+      await runCommand(op,git,['checkout','-B','main',fetched],{cwd:stageRoot,env:stageEnv,detached:true,timeoutMs:5*60*1000,npmMutation:true})
+      const declared=(await captureCommand(command,['-c','import pathlib,tomllib,sys; print(tomllib.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))["project"]["version"])',path.join(stageRoot,'pyproject.toml')],{cwd:stageRoot,env:stageEnv,timeoutMs:10000})).stdout.trim();if(declared!==release.version)throw new Error('hermes_agent_source_version_mismatch')
+      prepareHermesGitExcludes(stageRoot);atomicWrite(path.join(stageRoot,'.install_method'),'git\n')
+      op.phase='venv';op.message='正在创建 Hermes Agent 私有 Python 环境'
+      await runCommand(op,command,['-m','venv',stageVenv],{cwd:stageRoot,env:stageEnv,detached:true,timeoutMs:5*60*1000,npmMutation:true})
+      op.phase='dependencies';op.message='正在安装经哈希校验的 Hermes Agent 依赖'
+      await runCommand(op,stagePython,['-m','pip','install','--disable-pip-version-check','--no-input','--require-hashes','--no-deps','--requirement',release.requirementsPath],{cwd:stageRoot,env:stageEnv,detached:true,timeoutMs:45*60*1000,npmMutation:true})
+      op.phase='editable-install';op.message='正在安装可由 hermes update 管理的源码'
+      await runCommand(op,stagePython,['-m','pip','install','--disable-pip-version-check','--no-input','--no-build-isolation','--no-deps','--editable','.', '--config-setting','editable_mode=compat'],{cwd:stageRoot,env:stageEnv,detached:true,timeoutMs:10*60*1000,npmMutation:true})
+      await runCommand(op,stagePython,['-c',hermesEditableRelocationScript,stageRoot],{cwd:stageRoot,env:stageEnv,timeoutMs:60000})
+      writeHermesLaunchers(stageRoot)
+      const stagedVersion=versionFromText(`${(await captureCommand(stageHermes,['--version'],{cwd:stageRoot,env:stageEnv,timeoutMs:15000})).stdout}`);if(stagedVersion!==release.version)throw new Error('hermes_agent_staged_version_mismatch')
+      const stagedCommit=(await captureCommand(git,['rev-parse','HEAD'],{cwd:stageRoot,env:stageEnv,timeoutMs:10000})).stdout.trim().toLowerCase(),dirty=(await captureCommand(git,['status','--porcelain'],{cwd:stageRoot,env:stageEnv,timeoutMs:10000})).stdout.trim();if(stagedCommit!==release.commit||dirty)throw new Error('hermes_agent_staged_git_verification_failed')
+      op.phase='publish';op.message='正在原子切换 Hermes Agent 安装'
+      if(pathExists(hermesAgentRoot)){durableRename(hermesAgentRoot,backupRoot);oldMoved=true}
+      durableRename(stageRoot,hermesAgentRoot);stageRoot='';published=true
+      const finalEnv=hermesAgentEnvironment(),finalVersion=versionFromText(`${(await captureCommand(hermesCommand,['--version'],{cwd:hermesAgentRoot,env:finalEnv,timeoutMs:15000})).stdout}`);if(finalVersion!==release.version)throw new Error('hermes_agent_published_version_mismatch')
+      atomicWrite(hermesAgentInstallState,JSON.stringify({schema:1,root:hermesAgentRoot,repository:release.repository,version:release.version,ref:release.ref,commit:release.commit,requirementsSha256:release.requirements.sha256,updatedAt:new Date().toISOString()})+'\n')
+      if(oldMoved){removeHermesInstallDirectory(backupRoot);oldMoved=false}
     }
     const version=await executableVersion(hermesCommand);if(!executableFile(hermesCommand)||!version)throw new Error('hermes_agent_verification_failed')
     const originAfter=(await captureCommand(git,['remote','get-url','origin'],{cwd:hermesAgentRoot,env,timeoutMs:10000})).stdout.trim();if(!trustedHermesAgentOrigin(originAfter)||!fs.existsSync(path.join(hermesAgentRoot,'.git')))throw new Error('hermes_agent_git_verification_failed')
-    atomicWrite(hermesAgentInstallState,JSON.stringify({schema:1,root:hermesAgentRoot,repository:hermesAgentRepository,updatedAt:new Date().toISOString()})+'\n')
     op.status='success';op.phase='complete';op.afterVersion=version;op.message=`Hermes Agent ${version} 已完成；后续使用 hermes update 更新。请重启 Hermes Studio 使 Agent 生效`
-  }catch(error){op.status='failed';op.phase='failed';op.message=error?.message||'hermes_agent_install_failed'}finally{op.finishedAt=new Date().toISOString();delete op.pid}})()
+  }catch(error){let rollbackError='';try{if(published&&pathExists(hermesAgentRoot)){durableRename(hermesAgentRoot,failedRoot);published=false}if(oldMoved&&pathExists(backupRoot)){durableRename(backupRoot,hermesAgentRoot);oldMoved=false}if(pathExists(failedRoot))removeHermesInstallDirectory(failedRoot)}catch(recovery){rollbackError=`; rollback: ${recovery?.message||'failed'}`}op.status='failed';op.phase='failed';op.message=`${error?.message||'hermes_agent_install_failed'}${rollbackError}`}finally{try{if(stageRoot&&pathExists(stageRoot))removeHermesInstallDirectory(stageRoot)}catch{};op.finishedAt=new Date().toISOString();delete op.pid}})()
   return {ok:true,operation:operationView(op)}
 }
 function versionFromText(value){for(const match of String(value||'').matchAll(/(?:^|[^0-9A-Za-z])((?:v)?\d+\.\d+\.\d+(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?)(?=$|[^0-9A-Za-z])/g)){const parsed=parseSemver(match[1]);if(parsed)return parsed.value}return ''}
@@ -916,4 +983,4 @@ if (process.env.HSTUDIO_MANAGER_TEST_ONLY !== '1') {
   setTimeout(bootstrapRuntime,250).unref()
 }
 
-export {apiPermissionError, authSnapshot, beginStudioPublish, bootstrapInProgress, bootstrapProcessMatches, captureCommand, cleanupStudioGarbage, cleanupStudioStaging, commitStudioPublish, compareSemver, controlStudio, csrfOk, drainStudioUpdateForShutdown, fpkCacheForRepository, npmProcessGroupAlive, npmProcessMatches, parseSemver, persistentNpmOperation, pythonVersionFromText, readStudioRecoveryJournal, recoverStudioPublish, redacted, restoreStudioPublish, rollbackStudioAfterStop, runningNpmOperation, stopStudioForRecoverySync, studioUpdatePolicy, supportedPythonVersion, terminateCommand, trustedHermesAgentOrigin, updateStudio, validateStudioPackage, verifiedStudioPid, verifiedStudioProcess, versionFromText}
+export {apiPermissionError, authSnapshot, beginStudioPublish, bootstrapInProgress, bootstrapProcessMatches, captureCommand, cleanupStudioGarbage, cleanupStudioStaging, commitStudioPublish, compareSemver, controlStudio, csrfOk, drainStudioUpdateForShutdown, fpkCacheForRepository, hermesAgentEnvironment, hermesAgentVersionPolicy, hermesInstallDirectory, npmProcessGroupAlive, npmProcessMatches, parseSemver, persistentNpmOperation, pythonVersionFromText, readStudioRecoveryJournal, recoverStudioPublish, redacted, restoreStudioPublish, rollbackStudioAfterStop, runningNpmOperation, stopStudioForRecoverySync, studioUpdatePolicy, supportedPythonVersion, terminateCommand, trustedHermesAgentOrigin, updateStudio, validateHermesAgentRelease, validateStudioPackage, verifiedStudioPid, verifiedStudioProcess, versionFromText}

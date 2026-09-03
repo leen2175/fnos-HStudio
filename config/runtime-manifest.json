@@ -22,6 +22,28 @@
       "https://github.com/EKKOLearnAI/hermes-studio/releases/download/v0.7.16/hermes-web-ui-0.7.16.tar.gz"
     ]
   },
+  "hermesAgent": {
+    "version": "0.20.6",
+    "source": "EKKOLearnAI/hermes-studio@v0.7.16",
+    "repository": "https://github.com/NousResearch/hermes-agent.git",
+    "ref": "v2026.8.27",
+    "commit": "5fc308a70719a83cccdbba4c0e39c23f5a8239d5",
+    "installMethod": "git",
+    "extras": [
+      "all",
+      "messaging",
+      "slack",
+      "matrix",
+      "wecom",
+      "dingtalk",
+      "feishu"
+    ],
+    "requirements": {
+      "path": "hermes-agent/requirements.txt",
+      "sha256": "44457712fa75f0b424090333030f14035f18a4d67a3d5b311a31d1c26baf563d",
+      "size": 123970
+    }
+  },
   "trimCli": {
     "version": "0.1.0",
     "distribution": "fnOS-official-public-tool",
