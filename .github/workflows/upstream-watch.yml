@@ -1,0 +1,83 @@
+name: Watch Hermes Studio upstream
+
+on:
+  schedule:
+    - cron: "17 1,9,17 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hstudio-upstream-watch
+  cancel-in-progress: true
+
+jobs:
+  compare-runtime-pin:
+    name: Compare latest official Runtime with the lock
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out HStudio
+        uses: actions/checkout@v4
+
+      - name: Fetch the official latest Hermes Studio release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          curl \
+            --fail --location --silent --show-error \
+            --retry 5 --retry-all-errors --retry-delay 5 \
+            --connect-timeout 20 --max-time 120 \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            --output latest-release.json \
+            "https://api.github.com/repos/EKKOLearnAI/hermes-studio/releases/latest"
+
+      - name: Fail when the Runtime pin is stale
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          import re
+
+          manifest = json.loads(pathlib.Path("config/runtime-manifest.json").read_text(encoding="utf-8"))
+          pinned = str(manifest["studio"]["version"])
+          release = json.loads(pathlib.Path("latest-release.json").read_text(encoding="utf-8"))
+
+          def semver(value):
+              match = re.fullmatch(r"v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", value)
+              return tuple(map(int, match.groups())) if match else None
+
+          latest_tag = str(release.get("tag_name", ""))
+          latest = latest_tag.removeprefix("v")
+          latest_semver = semver(latest_tag)
+          if latest_semver is None or release.get("draft") or release.get("prerelease"):
+              raise SystemExit(f"GitHub latest is not a stable SemVer release: {latest_tag!r}")
+          expected_asset = f"hermes-web-ui-{latest}.tar.gz"
+          asset_names = {str(asset.get("name", "")) for asset in release.get("assets", [])}
+          if expected_asset not in asset_names:
+              raise SystemExit(f"GitHub latest {latest_tag} has no official {expected_asset} Runtime asset")
+          pinned_semver = semver(pinned)
+          if pinned_semver is None:
+              raise SystemExit(f"Invalid pinned Runtime version: {pinned}")
+
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with open(summary, "a", encoding="utf-8") as output:
+                  output.write("## Hermes Studio upstream watch\n\n")
+                  output.write(f"- Pinned Runtime: `{pinned}`\n")
+                  output.write(f"- Latest official Runtime asset: `{latest}` (`{latest_tag}`)\n")
+
+          if latest_semver > pinned_semver:
+              print(f"::error title=Runtime pin is stale::Pinned {pinned}; latest official Runtime is {latest}.")
+              raise SystemExit(1)
+          if latest_semver < pinned_semver:
+              print(f"::warning title=Runtime pin is ahead::Pinned {pinned}; latest published Runtime is {latest}.")
+          else:
+              print(f"Runtime pin is current: {pinned}")
+          PY

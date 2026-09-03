@@ -1,0 +1,47 @@
+#!/bin/sh
+
+set -eu
+
+SCRIPT_PATH=$0
+if command -v readlink >/dev/null 2>&1; then
+  RESOLVED_PATH=$(readlink -f -- "$SCRIPT_PATH" 2>/dev/null || true)
+  [ -n "$RESOLVED_PATH" ] && SCRIPT_PATH=$RESOLVED_PATH
+fi
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd)
+BIN_DIR="$SCRIPT_DIR/../bin"
+
+ARCH=$(uname -m)
+
+case "$ARCH" in
+  x86_64|amd64)
+    TARGET="$BIN_DIR/trim-cli-linux-x64"
+    ;;
+  aarch64|arm64)
+    TARGET="$BIN_DIR/trim-cli-linux-arm64"
+    ;;
+  *)
+    echo "Unsupported fnOS/Linux architecture for ./scripts/trim-cli: $ARCH" >&2
+    exit 1
+    ;;
+esac
+
+if [ -n "${TRIM_CLI_BIN:-}" ] && [ -x "$TRIM_CLI_BIN" ]; then
+  exec "$TRIM_CLI_BIN" "$@"
+fi
+
+if [ -x "$TARGET" ]; then
+  exec "$TARGET" "$@"
+fi
+
+PATH_TARGET=$(command -v trim-cli 2>/dev/null || true)
+PATH_RESOLVED=$PATH_TARGET
+if [ -n "$PATH_TARGET" ] && command -v readlink >/dev/null 2>&1; then
+  RESOLVED_PATH=$(readlink -f -- "$PATH_TARGET" 2>/dev/null || true)
+  [ -n "$RESOLVED_PATH" ] && PATH_RESOLVED=$RESOLVED_PATH
+fi
+if [ -n "$PATH_TARGET" ] && [ "$PATH_RESOLVED" != "$SCRIPT_PATH" ]; then
+  exec "$PATH_TARGET" "$@"
+fi
+
+echo "Missing trim-cli executable (checked TRIM_CLI_BIN, $TARGET and PATH)" >&2
+exit 1

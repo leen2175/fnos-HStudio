@@ -1,0 +1,8 @@
+#!/bin/bash
+# FPK upgrade callback. Adapter files may change; all user state stays in HOME.
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TRIM_PKGHOME="${TRIM_PKGHOME:-${TRIM_APPDEST:-$ROOT}/home}"
+export TRIM_PKGHOME
+"$ROOT/cmd/install_callback" || exit $?
+printf '%s [upgrade] FPK adapter upgraded; .npm-global and user config preserved\n' "$(date '+%Y-%m-%d %H:%M:%S')" >> "${TRIM_PKGVAR:-$ROOT/var}/info.log" 2>/dev/null || true

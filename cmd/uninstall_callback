@@ -1,0 +1,37 @@
+#!/bin/bash
+
+### 卸载后回调
+### wizard_delete_data="true"  → 删除全部数据（含 Runtime、Skills、CLI 与用户数据）
+### wizard_delete_data="false" → 保留全部（升级/重装时不破坏环境）
+
+TRIM_PKGHOME="${TRIM_PKGHOME:-}"
+TRIM_PKGVAR="${TRIM_PKGVAR:-}"
+wizard_delete_data="${wizard_delete_data:-false}"
+
+[ -z "$TRIM_PKGHOME" ] && exit 0
+
+remove_app_tree() {
+    local target="$1" expected_name="$2" parent
+    case "$target" in
+        /*) ;;
+        *) return 1 ;;
+    esac
+    case "/$target/" in
+        *'/../'*|*'/./'*) return 1 ;;
+    esac
+    [ "$(basename -- "$target")" = "$expected_name" ] || return 1
+    parent="$(dirname -- "$target")"
+    case "$parent" in
+        /|/var|/vol1|/tmp|/home|/var/apps|/vol1/@apphome|/vol1/@appconf|/vol1/@appcenter) return 1 ;;
+    esac
+    rm -rf -- "$target"
+}
+
+if [ "$wizard_delete_data" = "true" ]; then
+    remove_app_tree "${TRIM_PKGHOME%/}/data" data || exit 1
+    if [ -n "$TRIM_PKGVAR" ]; then
+        remove_app_tree "${TRIM_PKGVAR%/}" var || exit 1
+    fi
+fi
+
+exit 0

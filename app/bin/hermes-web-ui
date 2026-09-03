@@ -1,0 +1,23 @@
+#!/bin/bash
+# Stable fnOS shim. It always prefers the healthy user-global install, matching
+# Hermes Studio's documented `npm install -g hermes-web-ui` updater.
+set -u
+SCRIPT_PATH="$(readlink -f -- "$0" 2>/dev/null || printf '%s\n' "$0")"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+APP_ROOT="${TRIM_APPDEST:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+APP_NAME="${TRIM_APPNAME:-$(basename "$APP_ROOT")}"
+LIFECYCLE_ROOT="${LIFECYCLE_ROOT:-/var/apps/${APP_NAME}}"
+[ ! -f "$APP_ROOT/cmd/lib/environment.sh" ] || LIFECYCLE_ROOT="$APP_ROOT"
+[ -f "$LIFECYCLE_ROOT/cmd/lib/environment.sh" ] || {
+    echo 'HStudio lifecycle runtime is unavailable' >&2
+    exit 1
+}
+TRIM_APPDEST="$APP_ROOT"
+TRIM_PKGHOME="${TRIM_PKGHOME:-${LIFECYCLE_ROOT}/home}"
+DATA_DIR="${TRIM_PKGHOME}/data"
+export TRIM_APPDEST TRIM_PKGHOME DATA_DIR LIFECYCLE_ROOT
+. "$LIFECYCLE_ROOT/cmd/lib/environment.sh"
+. "$LIFECYCLE_ROOT/cmd/lib/runtime.sh"
+init_environment
+select_runtime "$(preferred_runtime)" || { echo 'No healthy Hermes runtime found' >&2; exit 1; }
+exec "$NODE_BIN" "$RUNTIME_ENTRY" "$@"

@@ -1,0 +1,19 @@
+[
+    {
+        "stepTitle": "安装说明",
+        "items": [
+            {
+                "type": "tips",
+                "helpText": "<b>HStudio</b><br>基于 Hermes Agent 的 AI 工作台与 Web 控制台，支持流式对话、模型/渠道管理、自动化任务与本地数据持久化。"
+            },
+            {
+                "type": "tips",
+                "helpText": "<br>本包使用 fnOS 提供的 nodejs_v24，不在设备上编译源码，也不使用 Docker。Lite 版首次打开 Manager 后安装官方 Hermes Studio；Offline 版从包内已校验归档恢复。"
+            },
+            {
+                "type": "tips",
+                "helpText": "<br>安装完成后，点击桌面图标在浏览器打开原版 Web UI，使用默认账号 <b>admin / 123456</b> 登录，随后在「设置」中配置模型 API Key 即可使用。"
+            }
+        ]
+    }
+]

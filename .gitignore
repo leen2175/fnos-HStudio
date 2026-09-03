@@ -1,0 +1,29 @@
+# ── 构建产物 / 大文件 ──
+# GitHub 拒绝 >100MB 文件，且以下产物不应进入 git（由 CI / 本地构建生成）。
+dist/
+artifacts/
+*.fpk
+*.fpk.sha256
+# 官方构建工具二进制
+fnpack.exe
+app.tgz
+manifest.checksum
+
+# ── 含真实凭据的本地部署/调试脚本（切勿提交 NAS 密码）──
+scripts/fix_nas.py
+scripts/test_v3_nas.py
+scripts/test_v4_nas.py
+scripts/local_monitor.py
+
+# ── 依赖 / 缓存 ──
+node_modules/
+**/node_modules/
+__pycache__/
+
+# ── 项目本地数据 ──
+.workbuddy/
+
+# ── 系统 / 编辑器 ──
+.DS_Store
+Thumbs.db
+*.log

@@ -1,0 +1,485 @@
+#!/bin/bash
+# fnOS lifecycle adapter. Hermes itself owns update/upgrade semantics; this layer
+# selects a healthy runtime and manages only this application's process.
+set -u
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+PACKAGE_ROOT="$(cd "$ROOT/.." && pwd)"
+TRIM_APPDEST="${TRIM_APPDEST:-$(cd "$ROOT/.." && pwd)}"
+TRIM_PKGHOME="${TRIM_PKGHOME:-${TRIM_APPDEST}/home}"
+TRIM_PKGVAR="${TRIM_PKGVAR:-${TRIM_APPDEST}/var}"
+DATA_DIR="${TRIM_PKGHOME}/data"
+export TRIM_APPDEST TRIM_PKGHOME TRIM_PKGVAR DATA_DIR
+. "$ROOT/lib/environment.sh"
+. "$ROOT/lib/runtime.sh"
+. "$ROOT/lib/process.sh"
+. "$ROOT/lib/migration.sh"
+. "$ROOT/lib/skills.sh"
+init_environment
+LOG_FILE="${TRIM_PKGVAR}/info.log"; mkdir -p "$(dirname "$LOG_FILE")"
+MANAGER_PID_FILE="${DATA_DIR}/manager/manager.pid"
+MANAGER_START_LOCK_DIR="${DATA_DIR}/manager/start.lock"
+STOPPING_FILE="${DATA_DIR}/manager/stopping"
+UPDATE_RECOVERY_FILE="${DATA_DIR}/manager/studio-update-recovery-required"
+MANAGER_START_LOCK_HELD=0
+MANAGER_START_OWNER_START=""
+mkdir -p "$(dirname "$MANAGER_PID_FILE")" "${HERMES_WEB_UI_HOME}" "$TRIM_PKGVAR" 2>/dev/null || true
+log_msg() { printf '%s [main] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >> "$LOG_FILE" 2>/dev/null || true; }
+fail() { log_msg "$1"; printf '%s\n' "$1" > "${TRIM_TEMP_LOGFILE:-${TRIM_PKGVAR}/last-error.log}" 2>/dev/null || true; return 1; }
+read_manager_pid() { [ -r "$MANAGER_PID_FILE" ] && sed -n '1p' "$MANAGER_PID_FILE" | grep -E '^[0-9]+$'; }
+mark_stopping() {
+    local tmp="${STOPPING_FILE}.tmp.$$"
+    mkdir -p "$(dirname "$STOPPING_FILE")" || return 1
+    printf '%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" > "$tmp" && mv -f "$tmp" "$STOPPING_FILE"
+}
+clear_stopping() { rm -f "$STOPPING_FILE"; }
+prepare_start() {
+    if [ "${HSTUDIO_MANAGER_UPDATE:-0}" = "1" ] \
+        || [ "${HSTUDIO_BOOTSTRAP_START:-0}" = "1" ]; then
+        [ ! -e "$STOPPING_FILE" ] || {
+            fail 'HStudio is stopping; automatic Studio start was cancelled'
+            return 1
+        }
+        return 0
+    fi
+    clear_stopping
+}
+update_recovery_allows_studio() {
+    [ ! -e "$UPDATE_RECOVERY_FILE" ] && return 0
+    # The Manager writes this durable journal before replacing Runtime files.
+    # Only that same updater may start the staged Runtime for its health check;
+    # ordinary fnOS/app starts remain fail-closed until commit or rollback.
+    [ "${HSTUDIO_MANAGER_UPDATE:-0}" = "1" ] && return 0
+    fail 'Hermes Studio update recovery is incomplete; Manager remains available but Studio will not start'
+    return 1
+}
+manager_process_matches() {
+    local p="$1" arg expected_data="DATA_DIR=${DATA_DIR}" entry_a entry_b found=1
+    case "$p" in ""|*[!0-9]*) return 1 ;; esac
+    kill -0 "$p" 2>/dev/null || return 1
+    [ -r "/proc/$p/cmdline" ] && [ -r "/proc/$p/environ" ] || return 1
+    entry_a="${TRIM_APPDEST}/manager/backend/server.mjs"
+    entry_b="${TRIM_APPDEST}/app/manager/backend/server.mjs"
+    while IFS= read -r arg; do
+        if [ "$arg" = "$entry_a" ] || [ "$arg" = "$entry_b" ]; then found=0; break; fi
+    done < <({ tr '\0' '\n' < "/proc/$p/cmdline"; } 2>/dev/null)
+    [ "$found" -eq 0 ] || return 1
+    { tr '\0' '\n' < "/proc/$p/environ"; } 2>/dev/null | grep -Fqx -- "$expected_data"
+}
+manager_process_matches_snapshot() {
+    local p="$1" started="$2" current
+    manager_process_matches "$p" || return 1
+    current="$(process_start_time "$p" 2>/dev/null || true)"
+    [ -n "$started" ] && [ "$current" = "$started" ]
+}
+manager_snapshot_alive() {
+    local p="$1" started="$2" current
+    case "$p:$started" in *[!0-9:]*) return 1 ;; :) return 1 ;; esac
+    kill -0 "$p" 2>/dev/null || return 1
+    current="$(process_start_time "$p" 2>/dev/null || true)"
+    [ -n "$current" ] && [ "$current" = "$started" ]
+}
+is_manager_running() {
+    local p
+    p="$(read_manager_pid 2>/dev/null || true)"
+    [ -n "$p" ] || return 1
+    if manager_process_matches "$p"; then return 0; fi
+    rm -f "$MANAGER_PID_FILE"
+    return 1
+}
+status() {
+    is_process_running && return 0
+    is_manager_running
+}
+acquire_manager_start_lock() {
+    local owner owner_start current attempt=1 candidate quarantine
+    MANAGER_START_OWNER_START="$(process_start_time "$$" 2>/dev/null || true)"
+    [ -n "$MANAGER_START_OWNER_START" ] || {
+        fail 'Could not determine HStudio Manager start-lock owner identity'
+        return 1
+    }
+    mkdir -p "$(dirname "$MANAGER_START_LOCK_DIR")" || return 1
+    while [ "$attempt" -le 100 ]; do
+        candidate="${MANAGER_START_LOCK_DIR}.candidate.$$.$RANDOM"
+        if (umask 077; mkdir "$candidate") 2>/dev/null \
+            && printf '%s\n' "$$" > "${candidate}/pid" \
+            && printf '%s\n' "$MANAGER_START_OWNER_START" > "${candidate}/starttime" \
+            && mv -T "$candidate" "$MANAGER_START_LOCK_DIR" 2>/dev/null; then
+            MANAGER_START_LOCK_HELD=1
+            return 0
+        fi
+        rm -f "${candidate}/pid" "${candidate}/starttime" 2>/dev/null || true
+        rmdir "$candidate" 2>/dev/null || true
+        if [ -L "$MANAGER_START_LOCK_DIR" ] || [ ! -d "$MANAGER_START_LOCK_DIR" ]; then
+            fail 'Unsafe HStudio Manager start-lock path'
+            return 1
+        fi
+        owner="$(sed -n '1p' "${MANAGER_START_LOCK_DIR}/pid" 2>/dev/null || true)"
+        owner_start="$(sed -n '1p' "${MANAGER_START_LOCK_DIR}/starttime" 2>/dev/null || true)"
+        current=""
+        case "$owner:$owner_start" in
+            *[!0-9:]*) fail 'Invalid HStudio Manager start-lock identity'; return 1 ;;
+            :) fail 'Invalid HStudio Manager start-lock identity'; return 1 ;;
+            *) current="$(process_start_time "$owner" 2>/dev/null || true)" ;;
+        esac
+        if [ "$current" != "$owner_start" ]; then
+            quarantine="${MANAGER_START_LOCK_DIR}.stale.$$.$RANDOM"
+            if mv -T "$MANAGER_START_LOCK_DIR" "$quarantine" 2>/dev/null; then
+                rm -f "${quarantine}/pid" "${quarantine}/starttime"
+                rmdir "$quarantine" 2>/dev/null || true
+            fi
+            attempt=$((attempt + 1))
+            continue
+        fi
+        sleep 0.1
+        attempt=$((attempt + 1))
+    done
+    fail 'Another HStudio Manager start is still in progress'
+    return 1
+}
+release_manager_start_lock() {
+    local owner owner_start
+    [ "$MANAGER_START_LOCK_HELD" -eq 1 ] || return 0
+    owner="$(sed -n '1p' "${MANAGER_START_LOCK_DIR}/pid" 2>/dev/null || true)"
+    owner_start="$(sed -n '1p' "${MANAGER_START_LOCK_DIR}/starttime" 2>/dev/null || true)"
+    if [ "$owner" = "$$" ] && [ "$owner_start" = "$MANAGER_START_OWNER_START" ]; then
+        rm -f "${MANAGER_START_LOCK_DIR}/pid" "${MANAGER_START_LOCK_DIR}/starttime"
+        rmdir "$MANAGER_START_LOCK_DIR" 2>/dev/null || true
+    fi
+    MANAGER_START_LOCK_HELD=0
+}
+start_manager_locked() {
+    local app_root="${TRIM_APPDEST}" entry="${TRIM_APPDEST}/manager/backend/server.mjs"
+    local p pid_tmp started="" manager_socket
+    [ ! -e "$STOPPING_FILE" ] || {
+        fail 'HStudio is stopping; Manager start was cancelled'
+        return 1
+    }
+    [ -f "$entry" ] || { app_root="${TRIM_APPDEST}/app"; entry="${app_root}/manager/backend/server.mjs"; }
+    [ -f "$entry" ] || { fail 'HStudio Manager entry is missing'; return 1; }
+    manager_socket="${app_root}/manager.sock"
+    p="$(read_manager_pid 2>/dev/null || true)"
+    if [ -n "$p" ] && manager_process_matches "$p"; then
+        [ -S "$manager_socket" ] && return 0
+        stop_manager || { fail 'Unready HStudio Manager could not be stopped safely'; return 1; }
+    else
+        rm -f "$MANAGER_PID_FILE"
+    fi
+    if [ -L "$manager_socket" ] || { [ -e "$manager_socket" ] && [ ! -S "$manager_socket" ]; }; then
+        fail 'Unsafe HStudio Manager socket path'
+        return 1
+    fi
+    rm -f "$manager_socket" || return 1
+    TRIM_APPDEST="$app_root" LIFECYCLE_ROOT="$PACKAGE_ROOT" MANAGER_SOCKET="$manager_socket" DATA_DIR="$DATA_DIR" nohup "$NODE_BIN" "$entry" >> "$LOG_FILE" 2>&1 &
+    p=$!
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+        started="$(process_start_time "$p" 2>/dev/null || true)"
+        if [ -n "$started" ] && manager_process_matches_snapshot "$p" "$started"; then
+            break
+        fi
+        kill -0 "$p" 2>/dev/null || break
+        sleep 0.1
+    done
+    if [ -z "$started" ] || ! manager_process_matches_snapshot "$p" "$started"; then
+        manager_process_matches "$p" && kill -TERM "$p" 2>/dev/null || true
+        fail 'HStudio Manager failed to start with a verifiable process identity'
+        return 1
+    fi
+    pid_tmp="${MANAGER_PID_FILE}.tmp.$$"
+    printf '%s\n' "$p" > "$pid_tmp" && mv -f "$pid_tmp" "$MANAGER_PID_FILE" || return 1
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 \
+        21 22 23 24 25 26 27 28 29 30 31 32 33 34 35 36 37 38 39 40 \
+        41 42 43 44 45 46 47 48 49 50; do
+        if manager_process_matches_snapshot "$p" "$started" && [ -S "$manager_socket" ]; then
+            return 0
+        fi
+        manager_snapshot_alive "$p" "$started" || break
+        sleep 0.2
+    done
+    stop_manager 2>/dev/null || true
+    fail 'HStudio Manager did not create its control socket'
+    return 1
+}
+start_manager() {
+    local rc
+    acquire_manager_start_lock || return $?
+    start_manager_locked
+    rc=$?
+    release_manager_start_lock
+    return "$rc"
+}
+stop_manager() {
+    local p started
+    p="$(read_manager_pid 2>/dev/null || true)"
+    if [ -n "$p" ]; then
+        started="$(process_start_time "$p" 2>/dev/null || true)"
+        if manager_process_matches_snapshot "$p" "$started"; then
+            kill -TERM "$p" 2>/dev/null || true
+            # Manager may be durably rolling back a Studio update after TERM.
+            # Give its bounded process stop plus rename/fsync sequence enough
+            # time before KILL; large package deletion is deferred by Manager.
+            for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+                manager_process_matches_snapshot "$p" "$started" || break
+                sleep 1
+            done
+            if manager_process_matches_snapshot "$p" "$started"; then
+                kill -KILL "$p" 2>/dev/null || true
+                for _ in 1 2 3 4 5; do
+                    manager_process_matches_snapshot "$p" "$started" || break
+                    sleep 1
+                done
+            fi
+            manager_process_matches_snapshot "$p" "$started" && return 1
+        fi
+    fi
+    rm -f "$MANAGER_PID_FILE" "${TRIM_APPDEST}/manager.sock" "${TRIM_APPDEST}/app/manager.sock"
+}
+studio_http_healthy() {
+    local url="http://127.0.0.1:${HERMES_PORT:-8649}/health"
+    "$NODE_BIN" -e '
+const timer=setTimeout(()=>process.exit(1),2500)
+fetch(process.argv[1],{cache:"no-store"}).then(response=>{
+  clearTimeout(timer)
+  process.exit(response.ok?0:1)
+}).catch(()=>process.exit(1))
+' "$url" >/dev/null 2>&1
+}
+wait_for_studio_health() {
+    local entry="$1" p
+    for _ in 1 2 3; do
+        p="$(read_process_pid 2>/dev/null || true)"
+        if [ -n "$p" ] && running_studio_matches_entry "$p" "$entry" \
+            && studio_http_healthy; then
+            return 0
+        fi
+        sleep 0.5
+    done
+    return 1
+}
+start_runtime_candidate() {
+    local source="$1" entry="$2" rc=0
+    [ ! -e "$STOPPING_FILE" ] || {
+        fail 'HStudio is stopping; Hermes Studio start was cancelled'
+        return 1
+    }
+    RUNTIME_SOURCE="$source"
+    RUNTIME_ENTRY="$entry"
+    if prepare_hermes_skill_source "$RUNTIME_ENTRY"; then
+        log_msg "Prepared merged Hermes Skill source at ${HERMES_WEB_UI_SKILLS_DIR}"
+    else
+        unset HERMES_WEB_UI_SKILLS_DIR
+        log_msg 'Could not prepare merged Hermes Skill source; using Runtime built-in Skills only'
+    fi
+    mkdir -p "$HERMES_WEB_UI_HOME"
+    log_msg "Starting ${RUNTIME_SOURCE} runtime $(runtime_version "$RUNTIME_ENTRY" "$NODE_BIN")"
+    [ ! -e "$STOPPING_FILE" ] || {
+        fail 'HStudio entered stopping state before Hermes Studio launch'
+        return 1
+    }
+    # The upstream command daemonizes the server but waits for its health probe.
+    # Run the wrapper synchronously, then independently verify the exact server
+    # path and /health endpoint because upstream may return zero after a health
+    # timeout while leaving a non-ready process behind.
+    (cd "$HERMES_WEB_UI_HOME" && run_node_command_bounded "$NODE_BIN" 45000 \
+        "$RUNTIME_ENTRY" start --port "${HERMES_PORT:-8649}" --no-open \
+        >> "$LOG_FILE" 2>&1) || rc=$?
+    if [ -e "$STOPPING_FILE" ]; then
+        log_msg 'HStudio entered stopping state during Studio startup; terminating the new process'
+        stop_process_tree 2>/dev/null || true
+        return 1
+    fi
+    if wait_for_studio_health "$RUNTIME_ENTRY"; then
+        [ "$rc" -eq 0 ] || log_msg "${RUNTIME_SOURCE} Runtime CLI exited ${rc}, but the verified server is healthy"
+        return 0
+    fi
+    log_msg "${RUNTIME_SOURCE} runtime failed its verified startup health check"
+    stop_process_tree 2>/dev/null || true
+    return 1
+}
+activate_previous_after_fallback() {
+    local entry="$1" previous target root p
+    previous="${runtime_bundled_root}/previous"
+    [ -L "$previous" ] || return 1
+    target="$(readlink "$previous" 2>/dev/null || true)"
+    case "$target" in ""|.|..|*/*|*\\*) return 1 ;; esac
+    root="$(runtime_package_root "$entry" 2>/dev/null || true)"
+    [ "$root" = "${runtime_bundled_root}/${target}" ] || return 1
+    p="$(read_process_pid 2>/dev/null || true)"
+    [ -n "$p" ] && running_studio_matches_entry "$p" "$entry" || return 1
+    activate_bundled_runtime "$target"
+}
+promote_selected_previous() {
+    local source="$1" entry="$2" previous
+    previous="$(previous_bundled_entry 2>/dev/null || true)"
+    if [ "$source" = bundled ] && [ -n "$previous" ] && [ "$entry" = "$previous" ]; then
+        activate_previous_after_fallback "$entry" \
+            || log_msg 'Previous bundled Runtime started successfully but could not be promoted to current'
+    fi
+}
+try_bundled_fallbacks() {
+    local primary="$1" current previous
+    current="$(bundled_entry 2>/dev/null || true)"
+    if [ -n "$current" ] && [ "$current" != "$primary" ] \
+        && health_check_runtime "$current"; then
+        log_msg 'Trying the current bundled Hermes Studio Runtime'
+        start_runtime_candidate bundled "$current" && return 0
+    fi
+    previous="$(previous_bundled_entry 2>/dev/null || true)"
+    if [ -n "$previous" ] && [ "$previous" != "$primary" ] \
+        && [ "$previous" != "$current" ] && health_check_runtime "$previous"; then
+        log_msg 'Current Hermes Studio Runtime failed; trying the previous bundled Runtime'
+        if start_runtime_candidate bundled "$previous"; then
+            activate_previous_after_fallback "$previous" \
+                || log_msg 'Previous bundled Runtime is healthy but current/previous pointers could not be rolled back'
+            return 0
+        fi
+    fi
+    return 1
+}
+start_studio() {
+    local allow_manager_only="${1:-0}" source="" entry="" p="" runtime_available=0
+    migrate_legacy_runtime 2>/dev/null || true
+    [ -n "${NODE_BIN:-}" ] || { fail 'nodejs_v24 runtime not found'; return 1; }
+    if select_runtime "$(preferred_runtime)"; then
+        runtime_available=1
+        source="$RUNTIME_SOURCE"
+        entry="$RUNTIME_ENTRY"
+    fi
+    # fnOS may call start again while the service is already healthy. Keep
+    # start idempotent; restart explicitly stops the service first.
+    if is_process_running; then
+        p="$(read_process_pid 2>/dev/null || true)"
+        if [ "$runtime_available" -eq 1 ] \
+            && running_studio_matches_entry "$p" "$entry" \
+            && studio_http_healthy; then
+            promote_selected_previous "$source" "$entry"
+            log_msg 'Hermes Studio already matches the selected Runtime and is healthy; start request ignored'
+            return 0
+        fi
+        if [ "$runtime_available" -eq 1 ]; then
+            log_msg 'Hermes Studio process is unhealthy or uses a different Runtime; restarting it'
+        else
+            log_msg 'Hermes Studio process has no selectable Runtime; stopping it'
+        fi
+        stop_process_tree "$p" || return 1
+    fi
+    stop_process_tree 2>/dev/null || true
+    if [ "$runtime_available" -ne 1 ]; then
+        log_msg 'No healthy Hermes runtime yet; Manager bootstrap will retry it'
+        [ "$allow_manager_only" = "1" ] && return 0
+        fail 'No healthy Hermes runtime is available'
+        return 1
+    fi
+    if start_runtime_candidate "$source" "$entry"; then
+        promote_selected_previous "$source" "$entry"
+        return 0
+    fi
+    if [ "$source" = user-global ] && try_bundled_fallbacks "$entry"; then
+        return 0
+    fi
+    if [ "$source" = bundled ] && try_bundled_fallbacks "$entry"; then
+        return 0
+    fi
+    fail 'Hermes Studio failed its verified startup health check'
+    return 1
+}
+running_studio_matches_entry() {
+    local p="$1" entry="$2" root expected arg
+    process_matches "$p" || return 1
+    root="$(runtime_package_root "$entry" 2>/dev/null || true)"
+    [ -n "$root" ] || return 1
+    expected="$root/dist/server/index.js"
+    while IFS= read -r arg; do
+        [ "$arg" = "$expected" ] && return 0
+    done < <({ tr '\0' '\n' < "/proc/$p/cmdline"; } 2>/dev/null)
+    return 1
+}
+reconcile_studio() {
+    local p
+    migrate_legacy_runtime 2>/dev/null || true
+    if ! select_runtime "$(preferred_runtime)"; then
+        fail 'No healthy Hermes runtime is available'
+        return 1
+    fi
+    p="$(read_process_pid 2>/dev/null || true)"
+    if [ -n "$p" ] && running_studio_matches_entry "$p" "$RUNTIME_ENTRY"; then
+        if studio_http_healthy; then
+            log_msg 'Running Hermes Studio already matches the selected Runtime and is healthy'
+            return 0
+        fi
+        log_msg 'Selected Hermes Studio process is unhealthy; restarting it'
+        stop_studio || return 1
+    fi
+    if [ -n "$p" ] && process_matches "$p"; then
+        log_msg 'Selected bundled Runtime changed; restarting Hermes Studio'
+        stop_studio || return 1
+    fi
+    start_studio 0
+}
+start_process() {
+    [ -n "${NODE_BIN:-}" ] || { fail 'nodejs_v24 runtime not found'; return 1; }
+    prepare_start || return 1
+    start_manager || return $?
+    if ! update_recovery_allows_studio; then
+        log_msg 'Manager-only mode retained for Studio update recovery'
+        return 0
+    fi
+    start_studio 1
+}
+stop_studio() {
+    local p entry="" rc=0
+    p="$(read_process_pid 2>/dev/null || true)"
+    # The upstream CLI knows how to stop its bridge/MCP descendants, but it
+    # trusts server.pid. Derive its entry from the already verified running
+    # server instead of probing unrelated Runtime candidates during shutdown.
+    if [ -n "$p" ] && process_matches "$p"; then
+        entry="$(process_runtime_entry "$p" 2>/dev/null || true)"
+    fi
+    if [ -n "${NODE_BIN:-}" ] && [ -n "$entry" ]; then
+        run_node_command_bounded "$NODE_BIN" 2000 "$entry" stop \
+            >> "$LOG_FILE" 2>&1 || true
+    fi
+    # Upstream stop may remove server.pid before the process has fully exited.
+    # Keep using the PID captured and validated above for the bounded fallback.
+    stop_process_tree "$p" || rc=$?
+    return "$rc"
+}
+stop_process() {
+    local rc=0 manager_lock=0
+    # Mark the whole application as stopping before touching any process. A
+    # Runtime bootstrap may finish concurrently; Manager must see this marker
+    # and must not start Studio again while fnOS is stopping or upgrading it.
+    mark_stopping || return 1
+    stop_bootstrap_process "${PACKAGE_ROOT}/cmd/install_callback" || rc=$?
+    stop_studio || rc=$?
+    if acquire_manager_start_lock; then
+        manager_lock=1
+        stop_manager || rc=$?
+    else
+        rc=1
+    fi
+    [ "$manager_lock" -eq 0 ] || release_manager_start_lock
+    # Manager shutdown may finish or roll back an in-flight update that was
+    # already spawning Studio when the first stop check ran. Reconcile once
+    # more after Manager is gone so fnOS never reports stopped with a newly
+    # created Hermes Studio process still alive.
+    stop_studio || rc=$?
+    stop_npm_operation || rc=$?
+    if [ -e "$UPDATE_RECOVERY_FILE" ]; then
+        fail 'Hermes Studio update recovery is incomplete; refusing lifecycle transition' || true
+        rc=1
+    fi
+    return "$rc"
+}
+case "${1:-status}" in
+  start) start_process ;;
+  stop) stop_process ;;
+  restart) stop_process && start_process ;;
+  studio-start) prepare_start && update_recovery_allows_studio && start_studio 0 ;;
+  studio-stop) stop_studio ;;
+  studio-restart) prepare_start && update_recovery_allows_studio && stop_studio && start_studio 0 ;;
+  bootstrap-complete) prepare_start && start_manager && update_recovery_allows_studio && reconcile_studio ;;
+  status) status && exit 0 || exit 3 ;;
+  runtime) select_runtime "${2:-}" && printf '%s:%s\n' "$RUNTIME_SOURCE" "$RUNTIME_ENTRY" ;;
+  runtime-version) select_runtime "${2:-}" && runtime_version "$RUNTIME_ENTRY" "$NODE_BIN" ;;
+  *) echo "usage: $0 {start|stop|restart|studio-start|studio-stop|studio-restart|status|runtime|runtime-version [auto|user-global|bundled]}" >&2; exit 1 ;;
+esac

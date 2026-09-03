@@ -1,0 +1,21 @@
+* text=auto
+
+*.sh text eol=lf
+*.mjs text eol=lf
+*.py text eol=lf
+/cmd/** text eol=lf
+/app/bin/** text eol=lf
+/.agents/skills/trim-cli/scripts/** text eol=lf
+/wizard/** text eol=lf
+/config/resource text eol=lf
+/config/bootstrap/*.env text eol=lf
+/manifest text eol=lf
+/licenses/Hermes-Studio-LICENSE.txt text eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.fpk binary
+*.gz binary
+*.exe binary

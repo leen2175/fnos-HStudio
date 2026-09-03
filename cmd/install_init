@@ -1,0 +1,15 @@
+#!/bin/bash
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TRIM_APPDEST="${TRIM_APPDEST:-$ROOT}"
+TRIM_PKGHOME="${TRIM_PKGHOME:-${TRIM_APPDEST}/home}"
+TRIM_PKGVAR="${TRIM_PKGVAR:-${TRIM_APPDEST}/var}"
+DATA_DIR="${TRIM_PKGHOME}/data"
+export TRIM_APPDEST TRIM_PKGHOME TRIM_PKGVAR DATA_DIR
+if ! "$ROOT/cmd/main" stop >/dev/null 2>&1; then
+    error_log="${TRIM_TEMP_LOGFILE:-${TRIM_PKGVAR}/last-error.log}"
+    mkdir -p "$(dirname "$error_log")" 2>/dev/null || true
+    printf '%s\n' 'HStudio could not stop safely before installation' > "$error_log" 2>/dev/null || true
+    exit 1
+fi
+exit 0
