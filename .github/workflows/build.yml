@@ -201,6 +201,7 @@ jobs:
           test -f "$package"
           test -f "$checksum"
           gh release create "$RELEASE_TAG" "$package" "$checksum" \
+            --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --generate-notes \
             --title "HStudio ${PACKAGE_VERSION}"
