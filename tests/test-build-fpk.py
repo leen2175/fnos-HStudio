@@ -243,6 +243,48 @@ class BuildFpkTests(unittest.TestCase):
             with tarfile.open(repeated, "r:gz") as outer:
                 self.assertEqual(outer.extractfile("app.tgz").read(), app_data)
 
+    def test_payload_whitelist_ignores_untracked_files(self) -> None:
+        garbage = {
+            ROOT / "manager" / "frontend" / "untracked-build-garbage.log": "manager/frontend/untracked-build-garbage.log",
+            ROOT / "app" / "ui" / "untracked-build-garbage.log": "ui/untracked-build-garbage.log",
+            ROOT / ".agents" / "skills" / "trim-cli" / "reference" / "untracked-build-garbage.log": "skills/trim-cli/reference/untracked-build-garbage.log",
+            ROOT / "cmd" / "untracked-build-garbage.log": "cmd/untracked-build-garbage.log",
+        }
+        for path in garbage:
+            path.write_text("must not enter an FPK\n", encoding="utf-8")
+        try:
+            with tempfile.TemporaryDirectory() as temporary:
+                output = pathlib.Path(temporary) / "lite.fpk"
+                BUILDER._write_fpk(
+                    output,
+                    "lite",
+                    BUILDER.package_version(),
+                    None,
+                    self.package_manifest,
+                )
+                with tarfile.open(output, "r:gz") as outer:
+                    outer_names = set(outer.getnames())
+                    app_data = outer.extractfile("app.tgz").read()
+                with tarfile.open(fileobj=io.BytesIO(app_data), mode="r:gz") as app:
+                    app_members = app.getmembers()
+                    app_names = {member.name for member in app_members}
+                    manager_files = {
+                        member.name
+                        for member in app_members
+                        if member.isfile() and member.name.startswith("manager/")
+                    }
+                self.assertEqual(
+                    manager_files,
+                    {"manager/backend/server.mjs", "manager/frontend/index.html"},
+                )
+                self.assertNotIn(garbage[ROOT / "cmd" / "untracked-build-garbage.log"], outer_names)
+                for path, archive_name in garbage.items():
+                    if path.parent.name != "cmd":
+                        self.assertNotIn(archive_name, app_names)
+        finally:
+            for path in garbage:
+                path.unlink(missing_ok=True)
+
     def test_requested_version_must_equal_root_manifest(self) -> None:
         with self.assertRaisesRegex(ValueError, "does not match root manifest"):
             BUILDER.checked_package_version("999.999.999")
@@ -409,7 +451,7 @@ class BuildFpkTests(unittest.TestCase):
                     second_outer.extractfile("app.tgz").read(),
                 )
 
-    def test_online_check_verifies_release_commit_metadata_and_license_hash(self) -> None:
+    def test_online_check_verifies_pinned_release_commit_metadata_and_license_hash(self) -> None:
         commit = "a" * 40
         tag = "v9.9.9"
         runtime_name = "hermes-web-ui-9.9.9.tar.gz"
@@ -434,10 +476,10 @@ class BuildFpkTests(unittest.TestCase):
         }
         api = "https://api.github.com/repos/example/project"
         fixtures = {
-            f"{api}/releases/latest": {"tag_name": tag, "draft": False},
             f"{api}/releases/tags/v9.9.9": {
                 "tag_name": tag,
                 "draft": False,
+                "prerelease": False,
                 "assets": [
                     {"name": runtime_name, "browser_download_url": source_url, "size": 1234},
                     {
@@ -455,18 +497,25 @@ class BuildFpkTests(unittest.TestCase):
             f"{api}/contents/LICENSE?ref={commit}": github_file(license_text),
         }
 
+        fetched = []
+
         def fetch(url: str) -> dict:
+            fetched.append(url)
             return fixtures[url]
 
         report = BUILDER.verify_upstream_metadata(studio, fetch_json=fetch)
-        self.assertEqual(report["latestTag"], tag)
+        self.assertEqual(report["tag"], tag)
         self.assertEqual(report["commit"], commit)
         self.assertEqual(report["licenseSha256"], hashlib.sha256(license_text).hexdigest())
+        self.assertNotIn(f"{api}/releases/latest", fetched)
 
-        stale = dict(fixtures)
-        stale[f"{api}/releases/latest"] = {"tag_name": "v9.9.10", "draft": False}
-        with self.assertRaisesRegex(ValueError, "is stale"):
-            BUILDER.verify_upstream_metadata(studio, fetch_json=lambda url: stale[url])
+        prerelease = dict(fixtures)
+        prerelease[f"{api}/releases/tags/v9.9.9"] = {
+            **fixtures[f"{api}/releases/tags/v9.9.9"],
+            "prerelease": True,
+        }
+        with self.assertRaisesRegex(ValueError, "published stable tag"):
+            BUILDER.verify_upstream_metadata(studio, fetch_json=lambda url: prerelease[url])
 
         mismatched = dict(fixtures)
         mismatched[f"{api}/git/ref/tags/v9.9.9"] = {

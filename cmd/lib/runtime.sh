@@ -45,7 +45,7 @@ const args=nodeMode?process.argv.slice(3):process.argv.slice(4)
 if(!["hstudio-bounded","hstudio-command-bounded"].includes(mode)||!Number.isSafeInteger(timeoutMs)||timeoutMs<1||!command||!args.length)process.exit(2)
 const detached=process.platform!=="win32"
 const child=spawn(command,args,{stdio:"inherit",detached})
-let timer=null,killTimer=null,finished=false
+let timer=null,killTimer=null,finalTimer=null,finished=false
 const signalChild=signal=>{try{process.kill(detached?-child.pid:child.pid,signal)}catch{}}
 const childScopeAlive=()=>{
   try{process.kill(detached?-child.pid:child.pid,0);return true}
@@ -57,6 +57,7 @@ const finish=code=>{
   finished=true
   if(timer)clearTimeout(timer)
   if(killTimer)clearTimeout(killTimer)
+  if(finalTimer)clearTimeout(finalTimer)
   if(scopePoll)clearInterval(scopePoll)
   process.exit(finalCode===null?(Number.isInteger(code)?code:1):finalCode)
 }
@@ -66,7 +67,14 @@ const cleanupScope=code=>{
   finalCode=Number.isInteger(code)?code:1
   signalChild("SIGTERM")
   scopePoll=setInterval(finishCleanedScope,50)
-  killTimer=setTimeout(()=>{signalChild("SIGKILL");finishCleanedScope()},2000)
+  killTimer=setTimeout(()=>{
+    signalChild("SIGKILL")
+    finishCleanedScope()
+    if(!finished)finalTimer=setTimeout(()=>{
+      if(finalCode===0)finalCode=1
+      finish(finalCode===null?1:finalCode)
+    },2000)
+  },2000)
   finishCleanedScope()
 }
 child.once("error",()=>finish(1))

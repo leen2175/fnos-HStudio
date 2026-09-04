@@ -33,6 +33,68 @@ TRIM_CLI_SKILL = ROOT / ".agents" / "skills" / "trim-cli"
 PROJECT_LICENSE = ROOT / "LICENSE"
 THIRD_PARTY_NOTICE = ROOT / "licenses" / "THIRD-PARTY-NOTICES.md"
 HERMES_AGENT_REQUIREMENTS = ROOT / "app" / "hermes-agent" / "requirements.txt"
+# Keep package inputs reviewable; recursive directory scans also capture ignored local files.
+APP_PAYLOAD_FILES = (
+    ("app/bin/hermes-web-ui", "bin/hermes-web-ui"),
+    ("app/ui/config", "ui/config"),
+    ("app/ui/images/icon_64.png", "ui/images/icon_64.png"),
+    ("app/ui/images/icon_256.png", "ui/images/icon_256.png"),
+    ("app/hermes-agent/requirements.txt", "hermes-agent/requirements.txt"),
+    ("manager/backend/server.mjs", "manager/backend/server.mjs"),
+    ("manager/frontend/index.html", "manager/frontend/index.html"),
+)
+TRIM_CLI_FILES = (
+    "SKILL.md",
+    "entries/trim-app.md",
+    "entries/trim-docker.md",
+    "entries/trim-download.md",
+    "entries/trim-file.md",
+    "entries/trim-log.md",
+    "entries/trim-monitor.md",
+    "entries/trim-shared.md",
+    "entries/trim-storage.md",
+    "entries/trim-system.md",
+    "entries/trim-user.md",
+    "reference/_conventions.md",
+    "reference/_index.md",
+    "reference/app-center.md",
+    "reference/dockermgr.md",
+    "reference/download.md",
+    "reference/file.md",
+    "reference/log.md",
+    "reference/resmon.md",
+    "reference/stor.md",
+    "reference/sysinfo.md",
+    "reference/user.md",
+    "reference/workflows/device-validation.md",
+    "reference/workflows/file-routing.md",
+    "reference/workflows/storage-dangerous-ops.md",
+    "scripts/trim-cli",
+    "bin/trim-cli-linux-arm64",
+    "bin/trim-cli-linux-x64",
+)
+OUTER_PAYLOAD_FILES = (
+    "cmd/install_callback",
+    "cmd/install_init",
+    "cmd/lib/download.sh",
+    "cmd/lib/environment.sh",
+    "cmd/lib/migration.sh",
+    "cmd/lib/process.sh",
+    "cmd/lib/runtime.sh",
+    "cmd/lib/skills.sh",
+    "cmd/main",
+    "cmd/uninstall_callback",
+    "cmd/uninstall_init",
+    "cmd/upgrade_callback",
+    "cmd/upgrade_init",
+    "config/bootstrap/hermes-studio-version.env",
+    "config/privilege",
+    "config/resource",
+    "wizard/install",
+    "wizard/uninstall",
+    "ICON.PNG",
+    "ICON_256.PNG",
+)
 GITHUB_TIMEOUT_SECONDS = 30
 GITHUB_REQUEST_ATTEMPTS = 3
 RUNTIME_SMOKE_TIMEOUT_SECONDS = 60
@@ -74,13 +136,16 @@ def normalize(member: tarfile.TarInfo) -> tarfile.TarInfo:
     return member
 
 
-def add_tree(tar: tarfile.TarFile, base: Path, arcname: str, excludes=()) -> None:
-    tar.add(base, arcname=arcname, recursive=False, filter=normalize)
-    for path in sorted(base.rglob("*")):
-        if any(excluded in path.parts for excluded in excludes):
-            continue
-        name = f"{arcname}/{path.relative_to(base).as_posix()}"
-        tar.add(path, arcname=name, recursive=False, filter=normalize)
+def add_required_file(tar: tarfile.TarFile, source: Path, arcname: str) -> None:
+    if not source.is_file():
+        raise FileNotFoundError(f"required payload file missing: {source}")
+    tar.add(source, arcname=arcname, recursive=False, filter=normalize)
+
+
+def add_directory(tar: tarfile.TarFile, source: Path, arcname: str) -> None:
+    if not source.is_dir():
+        raise FileNotFoundError(f"required payload directory missing: {source}")
+    tar.add(source, arcname=arcname, recursive=False, filter=normalize)
 
 
 def put_bytes(tar: tarfile.TarFile, name: str, data: bytes, mode: int = 0o644) -> None:
@@ -175,36 +240,25 @@ def add_trim_cli_payload(tar: tarfile.TarFile, package_manifest: dict) -> None:
     skill_manifest = json.loads((source / "manifest.json").read_text(encoding="utf-8"))
     if str(skill_manifest.get("version", "")) != str(metadata.get("version", "")):
         raise ValueError("trim-cli version does not match config/runtime-manifest.json")
+    expected_entries = [name for name in TRIM_CLI_FILES if name.startswith("entries/")]
+    if skill_manifest.get("entries") != expected_entries:
+        raise ValueError("trim-cli entry manifest differs from the packaged whitelist")
     skill_manifest["bin"] = {
         "linux-arm64": "bin/trim-cli-linux-arm64",
         "linux-x64": "bin/trim-cli-linux-x64",
     }
 
     arcname = "skills/trim-cli"
-    tar.add(source, arcname=arcname, recursive=False, filter=normalize)
-    tar.add(source / "SKILL.md", arcname=f"{arcname}/SKILL.md", recursive=False, filter=normalize)
+    add_directory(tar, source, arcname)
+    for directory in ("entries", "reference", "reference/workflows", "scripts", "bin"):
+        add_directory(tar, source / directory, f"{arcname}/{directory}")
+    for relative_name in TRIM_CLI_FILES:
+        add_required_file(tar, source / relative_name, f"{arcname}/{relative_name}")
     put_bytes(
         tar,
         f"{arcname}/manifest.json",
         (json.dumps(skill_manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
     )
-    add_tree(tar, source / "entries", f"{arcname}/entries")
-    add_tree(tar, source / "reference", f"{arcname}/reference")
-    tar.add(source / "scripts", arcname=f"{arcname}/scripts", recursive=False, filter=normalize)
-    tar.add(
-        source / "scripts" / "trim-cli",
-        arcname=f"{arcname}/scripts/trim-cli",
-        recursive=False,
-        filter=normalize,
-    )
-    tar.add(source / "bin", arcname=f"{arcname}/bin", recursive=False, filter=normalize)
-    for filename in ("trim-cli-linux-arm64", "trim-cli-linux-x64"):
-        tar.add(
-            source / "bin" / filename,
-            arcname=f"{arcname}/bin/{filename}",
-            recursive=False,
-            filter=normalize,
-        )
 
 
 def _safe_tar_member(member: tarfile.TarInfo) -> None:
@@ -635,19 +689,9 @@ def verify_upstream_metadata(
     if studio.get("sourceType") != "official-release":
         raise ValueError("Offline Runtime sourceType must be official-release")
 
-    latest = fetch_json(f"{api}/releases/latest")
-    latest_tag = str(latest.get("tag_name", ""))
-    if not latest_tag or latest.get("draft"):
-        raise ValueError("GitHub latest release metadata is invalid")
-    if latest_tag != tag:
-        raise ValueError(
-            f"pinned upstreamTag {tag!r} is stale; GitHub latest release is {latest_tag!r}. "
-            "Offline FPK must bundle the latest upstream release"
-        )
-
     release = fetch_json(f"{api}/releases/tags/{urllib.parse.quote(tag, safe='')}")
-    if release.get("tag_name") != tag or release.get("draft"):
-        raise ValueError(f"GitHub release metadata does not identify published tag {tag}")
+    if release.get("tag_name") != tag or release.get("draft") or release.get("prerelease"):
+        raise ValueError(f"GitHub release metadata does not identify published stable tag {tag}")
     assets = release.get("assets")
     if not isinstance(assets, list):
         raise ValueError(f"GitHub release {tag} has no asset metadata")
@@ -729,7 +773,6 @@ def verify_upstream_metadata(
             f"LICENSE sha256 at pinned commit is {license_sha256}"
         )
     return {
-        "latestTag": latest_tag,
         "tag": tag,
         "commit": commit,
         "licenseSha256": license_sha256,
@@ -785,29 +828,17 @@ def refresh_artifacts_index(keep_versions: int = 3) -> None:
 def create_app_payload(variant: str, runtime: Path | None, package_manifest: dict) -> bytes:
     app_buffer = io.BytesIO()
     with deterministic_tar_gz(app_buffer) as tar:
-        for directory in ("bin", "ui", "hermes-agent"):
-            path = ROOT / "app" / directory
-            if path.exists():
-                add_tree(tar, path, directory)
+        for source_name, archive_name in APP_PAYLOAD_FILES:
+            add_required_file(tar, ROOT / source_name, archive_name)
         license_path, license_name = validate_license_file(package_manifest["studio"])
         if not PROJECT_LICENSE.is_file():
             raise FileNotFoundError(f"project license missing: {PROJECT_LICENSE}")
         if not THIRD_PARTY_NOTICE.is_file():
             raise FileNotFoundError(f"third-party notices missing: {THIRD_PARTY_NOTICE}")
-        tar.add(ROOT / "licenses", arcname="licenses", recursive=False, filter=normalize)
-        tar.add(
-            PROJECT_LICENSE,
-            arcname="licenses/HStudio-LICENSE.txt",
-            recursive=False,
-            filter=normalize,
-        )
-        tar.add(license_path, arcname=license_name, recursive=False, filter=normalize)
-        tar.add(
-            THIRD_PARTY_NOTICE,
-            arcname="licenses/THIRD-PARTY-NOTICES.md",
-            recursive=False,
-            filter=normalize,
-        )
+        add_directory(tar, ROOT / "licenses", "licenses")
+        add_required_file(tar, PROJECT_LICENSE, "licenses/HStudio-LICENSE.txt")
+        add_required_file(tar, license_path, license_name)
+        add_required_file(tar, THIRD_PARTY_NOTICE, "licenses/THIRD-PARTY-NOTICES.md")
         add_trim_cli_payload(tar, package_manifest)
         if variant == "offline":
             if runtime is None:
@@ -818,8 +849,6 @@ def create_app_payload(variant: str, runtime: Path | None, package_manifest: dic
                 recursive=False,
                 filter=normalize,
             )
-        if (ROOT / "manager").exists():
-            add_tree(tar, ROOT / "manager", "manager")
     return app_buffer.getvalue()
 
 
@@ -963,33 +992,16 @@ def _write_fpk(
     try:
         with deterministic_tar_gz(temporary) as tar:
             put_bytes(tar, "app.tgz", app_data)
-            for name in ("cmd", "config"):
-                path = ROOT / name
-                if not path.exists():
-                    continue
-                tar.add(path, arcname=name, recursive=False, filter=normalize)
-                for child in sorted(path.rglob("*")):
-                    if name == "config" and child == path / "runtime-manifest.json":
-                        continue
-                    tar.add(
-                        child,
-                        arcname=f"{name}/{child.relative_to(path).as_posix()}",
-                        recursive=False,
-                        filter=normalize,
-                    )
+            for directory in ("cmd", "config", "wizard"):
+                add_directory(tar, ROOT / directory, directory)
+            for relative_name in OUTER_PAYLOAD_FILES:
+                add_required_file(tar, ROOT / relative_name, relative_name)
             put_bytes(
                 tar,
                 "config/runtime-manifest.json",
                 (json.dumps(package_manifest, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
             )
-            for name in ("ICON.PNG", "ICON_256.PNG"):
-                path = ROOT / name
-                if path.exists():
-                    tar.add(path, arcname=name, recursive=False, filter=normalize)
             put_bytes(tar, "manifest", ("\n".join(manifest_lines) + "\n").encode("utf-8"))
-            wizard = ROOT / "wizard"
-            if wizard.exists():
-                add_tree(tar, wizard, "wizard")
         validate_built_fpk(temporary, variant, version, package_manifest)
         os.replace(temporary, output)
     finally:
@@ -1053,7 +1065,7 @@ def main() -> None:
     parser.add_argument(
         "--test-skip-upstream-verification",
         action="store_true",
-        help="tests only: skip GitHub latest/release/commit/LICENSE verification",
+        help="tests only: skip locked GitHub release/commit/LICENSE verification",
     )
     args = parser.parse_args()
     if args.test_skip_upstream_verification and os.getenv("HSTUDIO_TESTING") != "1":

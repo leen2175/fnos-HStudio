@@ -215,6 +215,9 @@ if [ "${1:-}" = "-e" ]; then
         fi
         exec "$0" "$@"
     fi
+    case "${3:-}" in
+        http://*) [ -z "${HEALTH_URL_LOG:-}" ] || printf '%s\n' "$3" >> "$HEALTH_URL_LOG" ;;
+    esac
     [ "${FAKE_HEALTH_FAIL:-0}" != 1 ]
     exit $?
 fi
@@ -227,6 +230,7 @@ if [ "${2:-}" = "--version" ]; then
 fi
 printf '%s\n' "${2:-}" >> "$CALL_LOG"
 if [ "${2:-}" = start ]; then
+    [ -z "${START_PORT_LOG:-}" ] || printf '%s:%s\n' "${3:-}" "${4:-}" >> "$START_PORT_LOG"
     HERMES_WEB_UI_HOME="$HERMES_WEB_UI_HOME" setsid "$root/dist/server/index.js" >/dev/null 2>&1 &
     printf '%s\n' "$!" > "$HERMES_WEB_UI_HOME/server.pid"
 elif [ "${2:-}" = stop ]; then
@@ -264,10 +268,14 @@ kill -0 "$manager_pid" 2>/dev/null
 test -e "$APP/manager.sock"
 
 TRIM_APPDEST="$APP" TRIM_PKGHOME="$PKGHOME" TRIM_PKGVAR="$PKGVAR" NODE_ROOT="$T/node" \
-    HERMES_WEB_UI_HOME="$APP_DATA/hermes-home" bash "$ROOT/cmd/main" studio-start
+    HERMES_WEB_UI_HOME="$APP_DATA/hermes-home" TRIM_SERVICE_PORT=9864 \
+    START_PORT_LOG="$T/start-port.log" HEALTH_URL_LOG="$T/health-url.log" \
+    bash "$ROOT/cmd/main" studio-start
 test ! -e "$APP_DATA/manager/stopping"
 for _ in 1 2 3 4 5; do grep -qx start "$CALL_LOG" 2>/dev/null && break; sleep 1; done
 grep -qx start "$CALL_LOG"
+test "$(tail -n 1 "$T/start-port.log")" = '--port:9864'
+test "$(tail -n 1 "$T/health-url.log")" = 'http://127.0.0.1:9864/health'
 kill -0 "$manager_pid" 2>/dev/null
 
 # Automatic bootstrap/updater restarts must never clear a concurrent fnOS stop
@@ -283,7 +291,11 @@ test -e "$APP_DATA/manager/stopping"
 rm -f "$APP_DATA/manager/stopping"
 
 TRIM_APPDEST="$APP" TRIM_PKGHOME="$PKGHOME" TRIM_PKGVAR="$PKGVAR" NODE_ROOT="$T/node" \
-    HERMES_WEB_UI_HOME="$APP_DATA/hermes-home" bash "$ROOT/cmd/main" studio-restart
+    HERMES_WEB_UI_HOME="$APP_DATA/hermes-home" TRIM_SERVICE_PORT=9864 HERMES_PORT=9865 \
+    START_PORT_LOG="$T/start-port.log" HEALTH_URL_LOG="$T/health-url.log" \
+    bash "$ROOT/cmd/main" studio-restart
+test "$(tail -n 1 "$T/start-port.log")" = '--port:9865'
+test "$(tail -n 1 "$T/health-url.log")" = 'http://127.0.0.1:9865/health'
 kill -0 "$manager_pid" 2>/dev/null
 
 # A durable update journal blocks ordinary starts, but the Manager updater may
@@ -383,4 +395,31 @@ for init_name in install_init uninstall_init; do
     test -s "$T/${init_name}-error.log"
 done
 
-echo 'PASS PID identity, KILL recheck and Studio-only lifecycle controls'
+# fnOS status represents the Manager service: Manager-only is running, while a
+# surviving Studio after a Manager crash must not mask the failed service.
+rm -f "$T/manager-stop-race" "$APP_DATA/manager/manager.pid" \
+    "$APP_DATA/hermes-home/server.pid"
+DATA_DIR="$APP_DATA" "$APP/manager/backend/server.mjs" &
+status_manager_pid=$!
+printf '%s\n' "$status_manager_pid" > "$APP_DATA/manager/manager.pid"
+TRIM_APPDEST="$APP" TRIM_PKGHOME="$PKGHOME" TRIM_PKGVAR="$PKGVAR" NODE_ROOT="$T/node" \
+    HERMES_WEB_UI_HOME="$APP_DATA/hermes-home" bash "$ROOT/cmd/main" status
+
+HERMES_WEB_UI_HOME="$APP_DATA/hermes-home" \
+    "$APP_DATA/.npm-global/lib/node_modules/hermes-web-ui/dist/server/index.js" &
+status_studio_pid=$!
+printf '%s\n' "$status_studio_pid" > "$APP_DATA/hermes-home/server.pid"
+kill -KILL "$status_manager_pid"
+wait "$status_manager_pid" 2>/dev/null || true
+set +e
+TRIM_APPDEST="$APP" TRIM_PKGHOME="$PKGHOME" TRIM_PKGVAR="$PKGVAR" NODE_ROOT="$T/node" \
+    HERMES_WEB_UI_HOME="$APP_DATA/hermes-home" bash "$ROOT/cmd/main" status
+status_rc=$?
+set -e
+test "$status_rc" -eq 3
+kill -0 "$status_studio_pid" 2>/dev/null
+kill -TERM "$status_studio_pid" 2>/dev/null || true
+wait "$status_studio_pid" 2>/dev/null || true
+rm -f "$APP_DATA/hermes-home/server.pid"
+
+echo 'PASS PID identity, bounded cleanup, Manager status and Studio-only lifecycle controls'

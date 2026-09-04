@@ -12,7 +12,7 @@ const managerTestLifecycle=path.join(managerTestData,'lifecycle')
 fs.mkdirSync(path.join(managerTestLifecycle,'cmd'),{recursive:true})
 fs.writeFileSync(path.join(managerTestLifecycle,'cmd','main'),'#!/bin/sh\nexit 1\n',{mode:0o755})
 process.env.LIFECYCLE_ROOT=managerTestLifecycle
-const {apiPermissionError, authSnapshot, beginStudioPublish, bootstrapInProgress, bootstrapProcessMatches, captureCommand, cleanupStudioGarbage, cleanupStudioStaging, compareSemver, controlStudio, csrfOk, drainStudioUpdateForShutdown, fpkCacheForRepository, hermesAgentEnvironment, hermesAgentVersionPolicy, hermesInstallDirectory, npmProcessGroupAlive, npmProcessMatches, parseSemver, persistentNpmOperation, pythonVersionFromText, readStudioRecoveryJournal, recoverStudioPublish, redacted, restoreStudioPublish, rollbackStudioAfterStop, runningNpmOperation, stopStudioForRecoverySync, studioUpdatePolicy, supportedPythonVersion, terminateCommand, trustedHermesAgentOrigin, updateStudio, validateHermesAgentRelease, validateStudioPackage, verifiedStudioPid, verifiedStudioProcess, versionFromText} = await import('../manager/backend/server.mjs')
+const {agentReadiness, apiPermissionError, authSnapshot, beginStudioPublish, bootstrapInProgress, bootstrapProcessMatches, captureCommand, cleanupHermesBackup, cleanupStudioGarbage, cleanupStudioStaging, compareSemver, controlStudio, csrfOk, drainStudioUpdateForShutdown, fpkCacheForCurrent, fpkCacheForRepository, fpkUpdate, hermesAgentEnvironment, hermesAgentStudioCompatibility, hermesAgentVersionPolicy, hermesInstallDirectory, lifecycleConflict, managerConfig, npmProcessGroupAlive, npmProcessMatches, operationForId, operationView, parseSemver, persistentNpmOperation, pythonVersionFromText, readStudioRecoveryJournal, recoverStudioPublish, redacted, rememberOutput, restoreStudioPublish, rollbackStudioAfterStop, runningNpmOperation, runningStudioStartOperation, stopStudioForRecoverySync, studioServicePort, studioUpdatePolicy, supportedPythonVersion, terminateCommand, trustedHermesAgentOrigin, updateStudio, validateHermesAgentRelease, validatedPublicUrl, validateStudioPackage, verifiedStudioPid, verifiedStudioProcess, versionFromText} = await import('../manager/backend/server.mjs')
 
 const request = (headers={}) => ({headers})
 const admin = request({'x-trim-userid':'1000','x-trim-isadmin':'true','x-trim-username':'admin',host:'nas.example'})
@@ -26,6 +26,15 @@ assert.equal(csrfOk({...admin,headers:{...admin.headers,origin:'https://nas.exam
 assert.equal(csrfOk({...admin,headers:{...admin.headers,host:'manager.internal',origin:'https://nas.example','sec-fetch-site':'same-origin'}}), true)
 assert.equal(csrfOk({...admin,headers:{...admin.headers,origin:'https://evil.example','sec-fetch-site':'same-site'}}), false)
 assert.equal(csrfOk({...admin,headers:{...admin.headers,origin:'https://evil.example','sec-fetch-site':'cross-site'}}), false)
+assert.equal(csrfOk({...admin,headers:{...admin.headers,'sec-fetch-site':'cross-site'}}), false)
+
+assert.equal(validatedPublicUrl('https://hstudio.example.test/'), 'https://hstudio.example.test/')
+assert.equal(validatedPublicUrl('http://192.0.2.10:8649/path'), 'http://192.0.2.10:8649/path')
+assert.equal(validatedPublicUrl('javascript:alert(1)'), '')
+assert.equal(validatedPublicUrl('https://user:secret@example.test/'), '')
+assert.deepEqual(managerConfig({HSTUDIO_PUBLIC_URL:'https://studio.example.test',HERMES_PORT:'9001',TRIM_SERVICE_PORT:'9002'}),{publicStudioUrl:'https://studio.example.test/',servicePort:9001})
+assert.deepEqual(managerConfig({HSTUDIO_PUBLIC_URL:'file:///tmp/studio',HERMES_PORT:'70000'}),{publicStudioUrl:'',servicePort:8649})
+assert.equal(studioServicePort({TRIM_SERVICE_PORT:'8650'}),8650)
 
 const sensitive = [
   'Authorization: Bearer top-secret-token',
@@ -38,6 +47,32 @@ for (const value of ['top-secret-token','naked-secret','json-secret','session-se
   assert.equal(clean.includes(value), false, `secret leaked: ${value}`)
 }
 assert.match(clean, /\[REDACTED\]/)
+
+const splitOperation={id:'11111111-1111-4111-8111-111111111111',kind:'test',target:'test',status:'running',message:'',output:'',startedAt:new Date().toISOString()}
+rememberOutput(splitOperation,'Authorization: Bearer split-')
+rememberOutput(splitOperation,'chunk-secret\nfinished')
+assert.equal(splitOperation.output.includes('split-chunk-secret'),true)
+assert.equal(operationView(splitOperation).output.includes('split-chunk-secret'),false)
+assert.match(operationView(splitOperation).output,/\[REDACTED\]/)
+assert.equal(operationForId(splitOperation.id,[splitOperation]).id,splitOperation.id)
+assert.equal(operationForId('not-an-operation-id',[splitOperation]),null)
+assert.equal(operationForId('22222222-2222-4222-8222-222222222222',[splitOperation]),null)
+
+const truncatedSecretOperation={...splitOperation,id:'22222222-2222-4222-8222-222222222222',output:''}
+rememberOutput(truncatedSecretOperation,`normal\nAuthorization: Bearer ${'x'.repeat(12100)}should-never-leak`)
+assert.equal(truncatedSecretOperation.output,'')
+assert.equal(truncatedSecretOperation.outputDiscardingLine,true)
+rememberOutput(truncatedSecretOperation,'-continued-secret')
+assert.equal(truncatedSecretOperation.output,'')
+rememberOutput(truncatedSecretOperation,'\nvisible-after-boundary\n')
+assert.equal(truncatedSecretOperation.outputDiscardingLine,false)
+assert.equal(operationView(truncatedSecretOperation).output,'visible-after-boundary\n')
+assert.equal(operationView(truncatedSecretOperation).output.includes('should-never-leak'),false)
+
+const completedLongLineOperation={...splitOperation,id:'33333333-3333-4333-8333-333333333333',output:''}
+rememberOutput(completedLongLineOperation,`Bearer ${'y'.repeat(12100)}long-secret-tail\nretained-complete-line\n`)
+assert.equal(operationView(completedLongLineOperation).output,'retained-complete-line\n')
+assert.ok(completedLongLineOperation.output.length<=12000)
 
 assert.equal(parseSemver('v0.7.16').value, '0.7.16')
 assert.equal(parseSemver('0.7.016'), null)
@@ -60,11 +95,19 @@ assert.equal(trustedHermesAgentOrigin('https://github.com/NousResearch/hermes-ag
 assert.equal(trustedHermesAgentOrigin('https://github.com/example/hermes-agent.git'),false)
 const hermesRelease={version:'0.20.6',source:'EKKOLearnAI/hermes-studio@v0.7.16',repository:'https://github.com/NousResearch/hermes-agent.git',ref:'v2026.8.27',commit:'5fc308a70719a83cccdbba4c0e39c23f5a8239d5',installMethod:'git',extras:['all'],requirements:{path:'hermes-agent/requirements.txt',sha256:'a'.repeat(64),size:1}}
 assert.equal(validateHermesAgentRelease(hermesRelease).commit,hermesRelease.commit)
+assert.equal(validateHermesAgentRelease(hermesRelease).recommendedForStudioVersion,'0.7.16')
 assert.throws(()=>validateHermesAgentRelease({...hermesRelease,source:'NousResearch/hermes-agent'}),/release_source_invalid/)
+assert.throws(()=>validateHermesAgentRelease({...hermesRelease,source:'EKKOLearnAI/hermes-studio@v0.07.16'}),/release_source_invalid/)
 assert.throws(()=>validateHermesAgentRelease({...hermesRelease,commit:'main'}),/git_pin_invalid/)
 assert.equal(hermesAgentVersionPolicy('Hermes Agent v0.20.6','0.20.6'),'recommended')
 assert.equal(hermesAgentVersionPolicy('Hermes Agent v0.21.0','0.20.6'),'ahead')
 assert.equal(hermesAgentVersionPolicy('Hermes Agent v0.19.0','0.20.6'),'behind')
+assert.equal(hermesAgentStudioCompatibility('Hermes Studio v0.7.16','0.7.16'),'verified')
+assert.equal(hermesAgentStudioCompatibility('Hermes Studio v0.7.17','0.7.16'),'unverified')
+assert.equal(hermesAgentStudioCompatibility('unknown','0.7.16'),'unverified')
+assert.deepEqual(agentReadiness('/tmp/hermes',''),{present:true,installed:true,ready:false})
+assert.deepEqual(agentReadiness('/tmp/hermes','Hermes Agent v0.20.6'),{present:true,installed:true,ready:true})
+assert.deepEqual(agentReadiness('/tmp/pi','pi 0.1.0',{adapterRequired:true,adapterInstalled:false}),{present:true,installed:true,ready:false})
 const stage=hermesInstallDirectory('stage','11111111-1111-4111-8111-111111111111'),stageEnv=hermesAgentEnvironment(stage)
 assert.equal(stageEnv.HERMES_AGENT_ROOT,stage)
 assert.equal(stageEnv.VIRTUAL_ENV,path.join(stage,'venv'))
@@ -73,6 +116,14 @@ assert.equal(runningNpmOperation([{kind:'agent-install',status:'running',target:
 assert.equal(runningNpmOperation([{kind:'hermes-agent-install',status:'running',target:'hermes-agent'}]).target,'hermes-agent')
 assert.equal(runningNpmOperation([{kind:'studio-update',status:'success',target:'studio'}]),undefined)
 assert.equal(runningNpmOperation([{kind:'other',status:'running',target:'other'}]),undefined)
+const agentInstallOperation={id:'33333333-3333-4333-8333-333333333333',kind:'agent-install',status:'running',target:'codex',startedAt:new Date().toISOString()}
+assert.equal(lifecycleConflict('start',()=>agentInstallOperation),agentInstallOperation)
+assert.equal(lifecycleConflict('restart',()=>agentInstallOperation),agentInstallOperation)
+assert.equal(lifecycleConflict('stop',()=>agentInstallOperation),null)
+assert.equal(runningStudioStartOperation([{kind:'studio-lifecycle',action:'start',status:'running',target:'studio'}]).action,'start')
+assert.equal(runningStudioStartOperation([{kind:'studio-lifecycle',action:'stop',status:'running',target:'studio'}]),undefined)
+assert.equal(cleanupHermesBackup('/unused',()=>{throw new Error('busy')}),true)
+assert.equal(cleanupHermesBackup('/unused',()=>{}),false)
 
 const npmProcRoot=fs.mkdtempSync(path.join(os.tmpdir(),'hstudio-npm-proc-'))
 try{
@@ -458,17 +509,53 @@ assert.deepEqual(studioUpdatePolicy('0.7.16','0.7.16'), {currentVersion:'0.7.16'
 assert.deepEqual(fpkCacheForRepository({latestVersion:'0.7.15-1',releaseUrl:'https://github.com/old/repository'},'leen2175/fnos-HStudio'), {})
 assert.deepEqual(fpkCacheForRepository({repository:'old/repository',releaseUrl:'https://github.com/old/repository'},'leen2175/fnos-HStudio'), {})
 assert.deepEqual(fpkCacheForRepository({repository:'leen2175/fnos-HStudio',latestVersion:'0.0.50'},'leen2175/fnos-HStudio'), {repository:'leen2175/fnos-HStudio',latestVersion:'0.0.50'})
+assert.equal(fpkCacheForCurrent({latestVersion:'0.0.53',currentVersion:'0.0.52',updateAvailable:true},'0.0.53').updateAvailable,false)
+assert.equal(fpkCacheForCurrent({latestVersion:'0.0.53'},'0.0.52').updateAvailable,true)
+
+const fpkRoot=fs.mkdtempSync(path.join(os.tmpdir(),'hstudio-fpk-update-'))
+try{
+  const repository='leen2175/fnos-HStudio',cachedFile=path.join(fpkRoot,'cached.json'),checkedAt='2026-09-04T00:00:00.000Z'
+  fs.writeFileSync(cachedFile,JSON.stringify({repository,currentVersion:'0.0.52',latestVersion:'0.0.53',updateAvailable:true,lastCheckedAt:checkedAt}))
+  let cachedRequests=0
+  const recalculated=await fpkUpdate(false,{stateFile:cachedFile,repository,getCurrentVersion:()=> '0.0.53',requestJson:async()=>{cachedRequests++;throw new Error('should_not_fetch')},now:()=>Date.parse(checkedAt)+1000})
+  assert.equal(recalculated.currentVersion,'0.0.53');assert.equal(recalculated.updateAvailable,false);assert.equal(cachedRequests,0)
+
+  const noReleaseFile=path.join(fpkRoot,'no-release.json')
+  const noRelease=await fpkUpdate(true,{stateFile:noReleaseFile,repository,getCurrentVersion:()=> '0.0.53',requestJson:async()=>({status:404,headers:{},body:''}),now:()=>Date.parse(checkedAt)+2000})
+  assert.equal(noRelease.error,'');assert.equal(noRelease.reason,'no-release');assert.equal(noRelease.updateAvailable,false)
+
+  const releaseFile=path.join(fpkRoot,'release.json')
+  const release=await fpkUpdate(true,{stateFile:releaseFile,repository,getCurrentVersion:()=> '0.0.53',requestJson:async()=>({status:200,headers:{etag:'release-etag'},body:JSON.stringify({tag_name:'v0.0.54',html_url:'https://github.com/leen2175/fnos-HStudio/releases/tag/v0.0.54',published_at:'2026-09-04T00:00:00Z'})}),now:()=>Date.parse(checkedAt)+2500})
+  assert.equal(release.latestVersion,'0.0.54');assert.equal(release.updateAvailable,true);assert.equal(release.etag,'release-etag')
+
+  const failureFile=path.join(fpkRoot,'failure.json');let failureRequests=0
+  const failed=await fpkUpdate(true,{stateFile:failureFile,repository,getCurrentVersion:()=> '0.0.53',requestJson:async()=>{failureRequests++;throw new Error('offline')},now:()=>Date.parse(checkedAt)+3000})
+  assert.equal(failed.error,'update_check_failed');assert.equal(failureRequests,1)
+  await fpkUpdate(false,{stateFile:failureFile,repository,getCurrentVersion:()=> '0.0.53',requestJson:async()=>{failureRequests++;throw new Error('offline')},now:()=>Date.parse(checkedAt)+4000})
+  assert.equal(failureRequests,1)
+  await fpkUpdate(false,{stateFile:failureFile,repository,getCurrentVersion:()=> '0.0.53',requestJson:async()=>{failureRequests++;throw new Error('offline')},now:()=>Date.parse(checkedAt)+6*60*1000})
+  assert.equal(failureRequests,2)
+
+  const concurrentFile=path.join(fpkRoot,'concurrent.json');let releaseRequest,concurrentRequests=0
+  const releaseGate=new Promise(resolve=>{releaseRequest=resolve}),options={stateFile:concurrentFile,repository,getCurrentVersion:()=> '0.0.53',requestJson:async()=>{concurrentRequests++;await releaseGate;return {status:404,headers:{},body:''}},now:()=>Date.parse(checkedAt)+7000}
+  const first=fpkUpdate(true,options),second=fpkUpdate(true,options)
+  assert.equal(first,second);releaseRequest();await Promise.all([first,second]);assert.equal(concurrentRequests,1)
+}finally{fs.rmSync(fpkRoot,{recursive:true,force:true})}
 
 const frontend=fs.readFileSync(new URL('../manager/frontend/index.html',import.meta.url),'utf8')
 const backend=fs.readFileSync(new URL('../manager/backend/server.mjs',import.meta.url),'utf8')
 assert.match(backend, /leen2175\/fnos-HStudio/)
+assert.match(backend, /route==='\/api\/config'/)
+assert.match(backend, /const operationMatch=/)
+const hermesFinalVersionCheck=backend.indexOf("throw new Error('hermes_agent_verification_failed')"),hermesFinalOriginCheck=backend.indexOf("throw new Error('hermes_agent_git_verification_failed')"),hermesBackupCleanup=backend.indexOf('cleanupWarning=cleanupHermesBackup(committedBackup)')
+assert.ok(hermesFinalVersionCheck>=0&&hermesFinalOriginCheck>hermesFinalVersionCheck&&hermesBackupCleanup>hermesFinalOriginCheck)
 assert.match(frontend, /id="runtimeAction"[^>]*hidden/)
 assert.match(frontend, /id="runtimeReadySummary"[^>]*hidden/)
 assert.match(frontend, /id="bootstrapWork"/)
 assert.match(frontend, /ahead-of-registry/)
 assert.match(frontend, /data-tab="agents"><span[^>]*>⌘<\/span>Agents<\/button>/)
 assert.match(frontend, /agents:'Agents'/)
-assert.match(frontend, /Hermes 已安装':'Hermes 未安装'/)
+assert.match(frontend, /Hermes 已安装':v\.hermesAgent\?\.installed\?'Hermes 需修复':'Hermes 未安装'/)
 assert.match(frontend, /id="installHermesAgent"/)
 assert.match(frontend, /installAgent\('hermes-agent'/)
 assert.match(frontend, /fnOS python312/)
@@ -490,13 +577,25 @@ assert.doesNotMatch(frontend, /id="runtimePanel"/)
 assert.match(frontend, /id="overviewPanel"[\s\S]*id="runtimeAction"/)
 assert.match(frontend, /if\(tab==='runtime'\)tab='overview'/)
 assert.match(frontend, /\.tab-panel > \.card \+ \.card \{ margin-top:14px \}/)
-assert.match(frontend, /LIFECYCLE_POLL_LIMIT=180/)
+assert.match(frontend, /LIFECYCLE_POLL_LIMIT=90/)
 assert.match(frontend, /op\.kind==='studio-update'/)
-assert.match(frontend, /x\.kind==='studio-lifecycle'&&x\.id===id/)
+assert.match(frontend, /async function operationStatus\(id\)/)
+assert.match(frontend, /async function waitForOperation\(id,limit,onProgress,onReadError\)/)
 assert.doesNotMatch(frontend, /setTimeout\(r,700\)/)
 assert.doesNotMatch(frontend, /Web UI Runtime 与 Hermes Agent 是两个组件/)
 assert.doesNotMatch(frontend, /外部 Agent/)
 assert.doesNotMatch(frontend, /Runtime 回退安装/)
+
+const hermesUrlStart=frontend.indexOf('function hermesUrl()'),hermesUrlEnd=frontend.indexOf('document.querySelectorAll',hermesUrlStart)
+assert.ok(hermesUrlStart>=0&&hermesUrlEnd>hermesUrlStart)
+const hermesUrlSource=frontend.slice(hermesUrlStart,hermesUrlEnd),resolveHermesUrl=(href,config)=>Function('location','managerConfig',`${hermesUrlSource};return hermesUrl()`)(new URL(href),config)
+assert.equal(resolveHermesUrl('https://nas.example/app/HStudio/manager/',{publicStudioUrl:'https://studio.example/custom',servicePort:8649}),'https://studio.example/custom')
+assert.equal(resolveHermesUrl('https://192.0.2.10/app/HStudio/manager/',{publicStudioUrl:'',servicePort:8649}),'http://192.0.2.10:8649/')
+assert.equal(resolveHermesUrl('https://[2001:db8::10]/app/HStudio/manager/',{publicStudioUrl:'',servicePort:9001}),'http://[2001:db8::10]:9001/')
+assert.equal(resolveHermesUrl('https://nas.example/app/HStudio/manager/',{publicStudioUrl:'',servicePort:8649}),'https://hstudio.nas.example/')
+const renderFpkStart=frontend.indexOf('function renderFpkUpdate('),renderFpkEnd=frontend.indexOf('async function load()',renderFpkStart),renderFpkSource=frontend.slice(renderFpkStart,renderFpkEnd)
+assert.ok(renderFpkStart>=0&&renderFpkEnd>renderFpkStart)
+assert.doesNotMatch(renderFpkSource,/JSON\.stringify/)
 
 fs.rmSync(managerTestData,{recursive:true,force:true})
 console.log('PASS Manager authorization, redaction, update guard and ready-state UI')

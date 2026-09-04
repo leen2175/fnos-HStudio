@@ -15,6 +15,8 @@ export TRIM_APPDEST TRIM_PKGHOME TRIM_PKGVAR DATA_DIR
 . "$ROOT/lib/migration.sh"
 . "$ROOT/lib/skills.sh"
 init_environment
+HERMES_PORT="${HERMES_PORT:-${TRIM_SERVICE_PORT:-8649}}"
+export HERMES_PORT
 LOG_FILE="${TRIM_PKGVAR}/info.log"; mkdir -p "$(dirname "$LOG_FILE")"
 MANAGER_PID_FILE="${DATA_DIR}/manager/manager.pid"
 MANAGER_START_LOCK_DIR="${DATA_DIR}/manager/start.lock"
@@ -87,7 +89,6 @@ is_manager_running() {
     return 1
 }
 status() {
-    is_process_running && return 0
     is_manager_running
 }
 acquire_manager_start_lock() {
@@ -234,7 +235,7 @@ stop_manager() {
     rm -f "$MANAGER_PID_FILE" "${TRIM_APPDEST}/manager.sock" "${TRIM_APPDEST}/app/manager.sock"
 }
 studio_http_healthy() {
-    local url="http://127.0.0.1:${HERMES_PORT:-8649}/health"
+    local url="http://127.0.0.1:${HERMES_PORT}/health"
     "$NODE_BIN" -e '
 const timer=setTimeout(()=>process.exit(1),2500)
 fetch(process.argv[1],{cache:"no-store"}).then(response=>{
@@ -280,7 +281,7 @@ start_runtime_candidate() {
     # path and /health endpoint because upstream may return zero after a health
     # timeout while leaving a non-ready process behind.
     (cd "$HERMES_WEB_UI_HOME" && run_node_command_bounded "$NODE_BIN" 45000 \
-        "$RUNTIME_ENTRY" start --port "${HERMES_PORT:-8649}" --no-open \
+        "$RUNTIME_ENTRY" start --port "$HERMES_PORT" --no-open \
         >> "$LOG_FILE" 2>&1) || rc=$?
     if [ -e "$STOPPING_FILE" ]; then
         log_msg 'HStudio entered stopping state during Studio startup; terminating the new process'
