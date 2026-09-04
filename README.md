@@ -4,7 +4,7 @@
 
 项目仓库：https://github.com/leen2175/fnos-HStudio
 
-fnOS 应用身份固定为 `appname=HStudio`。当前 FPK 版本为 `0.0.60`，目标平台为 x86_64，Hermes Studio 使用上游默认端口 8648。
+fnOS 应用身份固定为 `appname=HStudio`。当前 FPK 版本为 `0.0.61`，目标平台为 x86_64，Hermes Studio 使用上游默认端口 8648。
 
 ## 项目结构
 

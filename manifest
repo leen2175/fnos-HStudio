@@ -1,5 +1,5 @@
 appname               = HStudio
-version               = 0.0.60
+version               = 0.0.61
 display_name          = "HStudio"
 desc                  = "Hermes Studio fnOS 在线适配器，包含 Manager 与 trim-cli 公共工具；Studio Runtime、Hermes Agent、Node.js 和 Python 均不打入 FPK。"
 platform              = x86
