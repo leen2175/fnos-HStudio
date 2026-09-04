@@ -15,7 +15,7 @@ export TRIM_APPDEST TRIM_PKGHOME TRIM_PKGVAR DATA_DIR
 . "$ROOT/lib/migration.sh"
 . "$ROOT/lib/skills.sh"
 init_environment
-HERMES_PORT="${HERMES_PORT:-${TRIM_SERVICE_PORT:-8649}}"
+HERMES_PORT="${HERMES_PORT:-${TRIM_SERVICE_PORT:-8648}}"
 export HERMES_PORT
 LOG_FILE="${TRIM_PKGVAR}/info.log"; mkdir -p "$(dirname "$LOG_FILE")"
 MANAGER_PID_FILE="${DATA_DIR}/manager/manager.pid"

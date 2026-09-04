@@ -62,18 +62,8 @@ init_environment() {
     TRIM_CLI_BIN="${HSTUDIO_TOOLS_BIN}/trim-cli"
     TRIM_CLI_CONFIG_DIR="${DATA_DIR}/trim-cli"
     HERMES_WEB_UI_SKILLS_DIR="${DATA_DIR}/manager/hermes-skills-source"
-    HERMES_AGENT_ROOT="${HERMES_AGENT_ROOT:-${DATA_DIR}/hermes-agent}"
     HERMES_AGENT_BRIDGE_DIR="${TRIM_PKGVAR:-${DATA_DIR}/run}"
     HERMES_AGENT_BRIDGE_ENDPOINT="${HERMES_AGENT_BRIDGE_ENDPOINT:-ipc://${HERMES_AGENT_BRIDGE_DIR}/hermes-agent-bridge.sock}"
-    hermes_agent_python="${HERMES_AGENT_ROOT}/venv/bin/python"
-    hermes_agent_bin="${HERMES_AGENT_ROOT}/venv/bin/hermes"
-    if [ -x "$hermes_agent_python" ]; then
-        HERMES_AGENT_BRIDGE_PYTHON="${HERMES_AGENT_BRIDGE_PYTHON:-$hermes_agent_python}"
-        HERMES_AGENT_CLI_PYTHON="${HERMES_AGENT_CLI_PYTHON:-$hermes_agent_python}"
-    fi
-    if [ -x "$hermes_agent_bin" ]; then
-        HERMES_BIN="${HERMES_BIN:-$hermes_agent_bin}"
-    fi
     HSTUDIO_SKILLS_DIR=""
     for candidate in "${TRIM_APPDEST:-}/skills" "${TRIM_APPDEST:-}/app/skills" \
         "${TRIM_APPDEST:-}/.agents/skills"; do
@@ -84,7 +74,8 @@ init_environment() {
     done
     export DATA_DIR NODE_ROOT NODE_BIN NPM_BIN PYTHON_ROOT PYTHON_BIN NPM_GLOBAL HSTUDIO_TOOLS_BIN
     export TRIM_CLI_BIN TRIM_CLI_CONFIG_DIR HSTUDIO_SKILLS_DIR HERMES_WEB_UI_SKILLS_DIR
-    export HERMES_AGENT_ROOT HERMES_AGENT_BRIDGE_DIR HERMES_AGENT_BRIDGE_ENDPOINT
+    export HERMES_AGENT_BRIDGE_DIR HERMES_AGENT_BRIDGE_ENDPOINT
+    [ -z "${HERMES_AGENT_ROOT:-}" ] || export HERMES_AGENT_ROOT
     [ -z "${HERMES_AGENT_BRIDGE_PYTHON:-}" ] || export HERMES_AGENT_BRIDGE_PYTHON
     [ -z "${HERMES_AGENT_CLI_PYTHON:-}" ] || export HERMES_AGENT_CLI_PYTHON
     [ -z "${HERMES_BIN:-}" ] || export HERMES_BIN
@@ -97,20 +88,27 @@ init_environment() {
     if [ -r "${DATA_DIR}/manager/npm-registry.json" ]; then
         configured_registry="$(sed -nE 's/.*"url"[[:space:]]*:[[:space:]]*"(https:\/\/[^" ]+)".*/\1/p' "${DATA_DIR}/manager/npm-registry.json" | head -1)"
         case "$configured_registry" in
-            https://registry.npmjs.org/|https://registry.npmmirror.com/|https://mirrors.cloud.tencent.com/npm/) NPM_REGISTRY="$configured_registry" ;;
+            https://registry.npmjs.org/|https://registry.npmmirror.com/|https://mirrors.cloud.tencent.com/npm/|https://repo.huaweicloud.com/repository/npm/|https://registry.yarnpkg.com/) NPM_REGISTRY="$configured_registry" ;;
         esac
     fi
     export NPM_REGISTRY npm_config_registry="${NPM_REGISTRY}" NPM_CONFIG_REGISTRY="${NPM_REGISTRY}"
-    export PATH="${NPM_GLOBAL}/bin:${HSTUDIO_TOOLS_BIN}:${HERMES_AGENT_ROOT}/venv/bin:${NODE_ROOT:+$NODE_ROOT/bin}:${PYTHON_ROOT:+$PYTHON_ROOT/bin}:${BUNDLED_RUNTIME_BIN:-}:${PATH:-/usr/local/bin:/usr/bin:/bin}"
+    PYTHON_REGISTRY="https://pypi.org/simple/"
+    if [ -r "${DATA_DIR}/manager/python-registry.json" ]; then
+        configured_python_registry="$(sed -nE 's/.*"url"[[:space:]]*:[[:space:]]*"(https:\/\/[^" ]+)".*/\1/p' "${DATA_DIR}/manager/python-registry.json" | head -1)"
+        case "$configured_python_registry" in
+            https://pypi.org/simple/|https://pypi.tuna.tsinghua.edu.cn/simple/|https://mirrors.ustc.edu.cn/pypi/simple/|https://mirrors.aliyun.com/pypi/simple/|https://repo.huaweicloud.com/repository/pypi/simple/) PYTHON_REGISTRY="$configured_python_registry" ;;
+        esac
+    fi
+    export PYTHON_REGISTRY PIP_INDEX_URL="${PYTHON_REGISTRY}" UV_DEFAULT_INDEX="${PYTHON_REGISTRY}" UV_INDEX_URL="${PYTHON_REGISTRY}"
+    export PATH="${NPM_GLOBAL}/bin:${HSTUDIO_TOOLS_BIN}:${NODE_ROOT:+$NODE_ROOT/bin}:${PYTHON_ROOT:+$PYTHON_ROOT/bin}:${BUNDLED_RUNTIME_BIN:-}:${PATH:-/usr/local/bin:/usr/bin:/bin}"
     runtime_user_bin="${NPM_GLOBAL}/bin/hermes-web-ui"
     runtime_bundled_root="${DATA_DIR}/runtime/studio"
     runtime_state_file="${DATA_DIR}/manager/state.json"
     process_pid_file="${HERMES_WEB_UI_HOME}/server.pid"
     mkdir -p "$NPM_GLOBAL/bin" "$NPM_GLOBAL/lib/node_modules" "$npm_config_cache" \
         "$DATA_DIR/runtime/studio" "$DATA_DIR/manager" "$HERMES_WEB_UI_HOME" \
-        "$HSTUDIO_TOOLS_BIN" "$TRIM_CLI_CONFIG_DIR" "$HERMES_AGENT_ROOT" \
-        "$HERMES_AGENT_BRIDGE_DIR"
-    chmod 700 "$TRIM_CLI_CONFIG_DIR" "$HERMES_AGENT_ROOT" "$HERMES_AGENT_BRIDGE_DIR" 2>/dev/null || true
+        "$HSTUDIO_TOOLS_BIN" "$TRIM_CLI_CONFIG_DIR" "$HERMES_AGENT_BRIDGE_DIR"
+    chmod 700 "$TRIM_CLI_CONFIG_DIR" "$HERMES_AGENT_BRIDGE_DIR" 2>/dev/null || true
 }
 
 json_escape() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }

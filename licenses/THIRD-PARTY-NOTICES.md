@@ -14,7 +14,7 @@ This file records third-party components bundled by HStudio. The HStudio adapter
 - Change Date: 2029-05-10
 - Change License: Apache License 2.0
 
-The exact upstream license text and its SHA-256 are pinned in `config/runtime-manifest.json` and verified during Offline builds.
+The exact upstream license text and its SHA-256 are pinned in `config/runtime-manifest.json` and packaged for the online Runtime bootstrap.
 
 ## trim-cli
 

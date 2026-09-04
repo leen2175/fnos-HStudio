@@ -8,13 +8,12 @@ trap 'rm -rf "$T"' EXIT
 
 make_fixture() {
     rm -rf "${T:?}/app" "${T:?}/home" "${T:?}/var" "${T:?}/node" "${T:?}/network-used"
-    mkdir -p "$T/app/config/bootstrap" "$T/app/config" "$T/app/skills" "$T/app/runtime" \
+    mkdir -p "$T/app/config/bootstrap" "$T/app/config" "$T/app/skills" \
         "$T/app/manager/backend" "$T/home" "$T/var" "$T/node/bin"
     cp -R "$ROOT/cmd" "$T/app/cmd"
     cp -R "$ROOT/.agents/skills/trim-cli" "$T/app/skills/trim-cli"
     cp "$ROOT/config/bootstrap/hermes-studio-version.env" "$T/app/config/bootstrap/hermes-studio-version.env"
     cp "$ROOT/config/runtime-manifest.json" "$T/app/config/runtime-manifest.json"
-    printf '%s' 'archive-must-not-be-read' > "$T/app/runtime/hermes-studio-runtime-$VERSION-linux-x64.tar.gz"
     cp "$ROOT/tests/helpers/fake-node.sh" "$T/node/bin/node"
     printf '%s\n' '// fake manager entry' > "$T/app/manager/backend/server.mjs"
     cat > "$T/node/bin/npm" <<EOF
@@ -41,7 +40,6 @@ expect_manifest_failure() {
     grep -q "$expected" "$T/app/install-error.log"
     test ! -e "$T/network-used"
     test ! -e "$T/home/data/cache/downloads/$VERSION.tar.gz"
-    ! grep -q 'found package Runtime archive' "$T/var/info.log"
 }
 
 make_fixture

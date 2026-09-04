@@ -166,8 +166,7 @@ install_bundled_trim_cli || fail 'bundled trim-cli Skill or matching Linux CLI i
 # App Center must be able to finish package installation even when the device
 # cannot reach GitHub. Runtime provisioning is retried by Manager explicitly;
 # the ordinary lifecycle callback only prepares persistent directories.
-if [ "${HSTUDIO_RUNTIME_BOOTSTRAP:-0}" != "1" ] \
-    && [ "${HSTUDIO_RUNTIME_PACKAGE_ONLY:-0}" != "1" ]; then
+if [ "${HSTUDIO_RUNTIME_BOOTSTRAP:-0}" != "1" ]; then
     mkdir -p "$DATA_DIR" "$NPM_GLOBAL" "$HERMES_WEB_UI_HOME" 2>/dev/null || true
     log_msg 'install complete; Runtime bootstrap deferred to Manager'
     exit 0
@@ -213,75 +212,27 @@ RUNTIME_MANIFEST_SIZE="${manifest_fields[2]}"
     || fail 'Hermes version metadata does not match Runtime manifest'
 
 ensure_bundled_runtime() {
-    local offline_only="${1:-0}" version target current current_version archive_found=0 archive_bytes
-    local npm_stage npm_package npm_archive npm_hash expected reason archive
-    local -a local_urls package_archives
+    local version target current current_version archive_bytes
+    local npm_stage npm_package npm_archive npm_hash expected
+    local -a local_urls
     version="${HERMES_STUDIO_VERSION}"
     target="${DATA_DIR}/runtime/studio/${version}"
-    # Package-only upgrades must consume the archive even when the installed
-    # version matches, so a repaired/repacked Offline FPK refreshes its Runtime.
-    if [ "$offline_only" != "1" ]; then
-        current="$(current_bundled_entry 2>/dev/null || true)"
-        if [ -n "$current" ] && health_check_runtime "$current"; then
-            current_version="$(runtime_package_version "$(runtime_package_root "$current")" 2>/dev/null || true)"
-            if [ "$current_version" = "$version" ]; then
-                log_msg "bundled runtime ${version} already active at its verified current target"
-                return 0
-            fi
-        fi
-        if health_check_runtime "$target/bin/hermes-web-ui"; then
-            if activate_bundled_runtime "$version"; then
-                log_msg "bundled runtime ${version} already present and active"; return 0
-            fi
-            log_msg "bundled runtime ${version} exists but current/previous pointer repair failed"
-            return 1
-        fi
-    fi
-    mkdir -p "${runtime_bundled_root}"
-    bootstrap_phase archive-search "Searching Offline Runtime in installed application files"
-    package_archives=(
-        "$ROOT"/cmd/bootstrap/hermes-studio-runtime-*.tar.gz
-        "$ROOT"/runtime/hermes-studio-runtime-*.tar.gz
-        "$ROOT"/config/bootstrap/hermes-studio-runtime-*.tar.gz
-        "$ROOT"/bootstrap/hermes-studio-runtime-*.tar.gz
-        "$APP_DIR"/runtime/hermes-studio-runtime-*.tar.gz
-        "$APP_DIR"/app/runtime/hermes-studio-runtime-*.tar.gz
-        "$APP_DIR"/config/bootstrap/hermes-studio-runtime-*.tar.gz
-        "$APP_DIR"/bootstrap/hermes-studio-runtime-*.tar.gz
-        "$APP_DIR"/../runtime/hermes-studio-runtime-*.tar.gz
-    )
-    if [ "$offline_only" != "1" ] && [ -n "${TRIM_PKGHOME:-}" ]; then
-        package_archives+=("$TRIM_PKGHOME"/runtime/hermes-studio-runtime-*.tar.gz)
-    fi
-    for archive in "${package_archives[@]}"; do
-        [ -f "$archive" ] || continue
-        archive_found=1
-        archive_bytes="$(stat -c '%s' "$archive" 2>/dev/null || true)"
-        log_msg "found package Runtime archive path=${archive} bytes=${archive_bytes:-unknown}"
-        bootstrap_phase archive-install "Installing verified Runtime from FPK"
-        if [ "$archive_bytes" != "$RUNTIME_MANIFEST_SIZE" ]; then
-            reason=size
-            bootstrap_phase archive-rejected "Offline Runtime rejected: ${reason}"
-            log_msg "package Runtime archive rejected path=${archive} reason=${reason}; expected bytes=${RUNTIME_MANIFEST_SIZE}"
-            continue
-        fi
-        if install_runtime_archive "$archive" "$version" "$RUNTIME_MANIFEST_SHA256"; then
-            log_msg "bundled runtime ${version} installed from package archive"; return 0
-        fi
-        reason="${RUNTIME_ARCHIVE_ERROR:-unknown}"
-        bootstrap_phase archive-rejected "Offline Runtime rejected: ${reason}"
-        log_msg "package Runtime archive rejected path=${archive} reason=${reason}; verify checksum, layout and free space"
-    done
-    [ "$archive_found" -eq 1 ] || log_msg "package Runtime archive not found under lifecycle=${ROOT} appdest=${APP_DIR} pkgetc=${TRIM_PKGETC:-<unset>}"
-    # A healthy user-selected Runtime must not trigger network activity during
-    # an FPK upgrade. Still consume a packaged archive when one is present so
-    # the bundled fallback is refreshed without changing Runtime preference.
-    if [ "$offline_only" = "1" ]; then
-        if [ "$archive_found" -eq 0 ]; then
+    current="$(current_bundled_entry 2>/dev/null || true)"
+    if [ -n "$current" ] && health_check_runtime "$current"; then
+        current_version="$(runtime_package_version "$(runtime_package_root "$current")" 2>/dev/null || true)"
+        if [ "$current_version" = "$version" ]; then
+            log_msg "bundled runtime ${version} already active at its verified current target"
             return 0
         fi
+    fi
+    if health_check_runtime "$target/bin/hermes-web-ui"; then
+        if activate_bundled_runtime "$version"; then
+            log_msg "bundled runtime ${version} already present and active"; return 0
+        fi
+        log_msg "bundled runtime ${version} exists but current/previous pointer repair failed"
         return 1
     fi
+    mkdir -p "${runtime_bundled_root}"
     if [ ! -e "$target/bin/hermes-web-ui" ] && [ ! -e "$target/bin/hermes-web-ui.mjs" ]; then
         mapfile -t local_urls < <(sed -n '/"urls"[[:space:]]*:/,/]/p' "$RUNTIME_MANIFEST" 2>/dev/null | sed -nE 's/.*"(https?:[^" ]+)".*/\1/p')
         expected="$RUNTIME_MANIFEST_SHA256"
@@ -339,7 +290,7 @@ ensure_bundled_runtime() {
     if [ "${HSTUDIO_RUNTIME_BOOTSTRAP:-0}" = "1" ]; then
         fail 'GitHub Runtime archive and npm registry fallback both failed; inspect Runtime bootstrap log'
     fi
-    # Lite packages intentionally allow first boot without network access.
+    # App Center installation stays independent from network availability.
     # Manager retries this bootstrap after installation instead of making App
     # Center reject the whole package.
     log_msg 'bundled runtime not available; deferring download to Manager'
@@ -348,20 +299,8 @@ ensure_bundled_runtime() {
 
 mkdir -p "$DATA_DIR" "$NPM_GLOBAL" "$HERMES_WEB_UI_HOME"
 migrate_legacy_runtime || true
-# FPK upgrades consume only a Runtime archive carried by the package. A Lite
-# package therefore remains a no-op here, while an Offline package refreshes
-# its verified fallback without network access or changing user-global choice.
-if [ "${HSTUDIO_RUNTIME_PACKAGE_ONLY:-0}" = "1" ]; then
-    ensure_bundled_runtime 1 \
-        || fail 'packaged Runtime archive was found but could not be verified and installed'
-    log_msg 'package-only Runtime refresh complete; network fallback was disabled'
-    exit 0
-fi
-# A Manager bootstrap refreshes an included bundled fallback, but never changes
-# or replaces a healthy user-global Runtime merely because it is older than the
-# bundled version.
+# Manager bootstrap never changes or replaces a healthy user-global Runtime.
 if health_check_runtime "$runtime_user_bin"; then
-    ensure_bundled_runtime 1 || fail 'packaged Runtime archive was found but could not be verified and installed'
     log_msg "healthy user Runtime ${runtime_user_bin} preserved as preferred auto Runtime"
 else
     ensure_bundled_runtime

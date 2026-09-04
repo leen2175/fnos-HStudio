@@ -92,4 +92,4 @@ if TRIM_APPNAME=HStudio TRIM_PKGHOME=/ TRIM_PKGVAR=/var wizard_delete_data=true 
 fi
 test -d "$T/safe-home/data"
 
-echo 'PASS trim-cli offline install, discovery, preservation and cleanup'
+echo 'PASS trim-cli install, discovery, preservation and cleanup'

@@ -14,7 +14,7 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$T/node/bin" "$T/source/runtime/bin" "$T/source/runtime/dist/server" \
-    "$T/home" "$T/var" "$T/app/manager/backend" "$T/app/runtime" \
+    "$T/home/data/cache/downloads" "$T/var" "$T/app/manager/backend" \
     "$T/app/skills/trim-cli/bin" "$T/app/skills/trim-cli/scripts" "$T/test-bin"
 cp -R "$ROOT/cmd" "$T/cmd"
 cp -R "$ROOT/config" "$T/config"
@@ -29,10 +29,10 @@ printf '%s\n' "{\"name\":\"hermes-web-ui\",\"version\":\"$VERSION\"}" > "$T/sour
 printf '%s\n' '// server' > "$T/source/runtime/dist/server/index.js"
 chmod +x "$T/node/bin/node" "$T/source/runtime/bin/hermes-web-ui" \
     "$T/app/skills/trim-cli/scripts/trim-cli" "$T/app/skills/trim-cli/bin/"*
-tar -czf "$T/app/runtime/hermes-studio-runtime-$VERSION-linux-x64.tar.gz" -C "$T/source" runtime
-archive_hash="$(sha256sum "$T/app/runtime/hermes-studio-runtime-$VERSION-linux-x64.tar.gz" | awk '{print $1}')"
-archive_size="$(stat -c '%s' "$T/app/runtime/hermes-studio-runtime-$VERSION-linux-x64.tar.gz")"
-sed -i -E "s/\"sha256\": \"[^\"]+\"/\"sha256\": \"$archive_hash\"/; s/\"size\": [0-9]+/\"size\": $archive_size/; /\"urls\": \[/,/\]/c\\    \"urls\": []" "$T/config/runtime-manifest.json"
+tar -czf "$T/home/data/cache/downloads/$VERSION.tar.gz" -C "$T/source" runtime
+archive_hash="$(sha256sum "$T/home/data/cache/downloads/$VERSION.tar.gz" | awk '{print $1}')"
+archive_size="$(stat -c '%s' "$T/home/data/cache/downloads/$VERSION.tar.gz")"
+sed -i -E "s/\"sha256\": \"[^\"]+\"/\"sha256\": \"$archive_hash\"/; s/\"size\": [0-9]+/\"size\": $archive_size/" "$T/config/runtime-manifest.json"
 
 real_tar="$(command -v tar)"
 real_rm="$(command -v rm)"

@@ -8,7 +8,7 @@
             },
             {
                 "type": "tips",
-                "helpText": "<br>本包使用 fnOS 提供的 nodejs_v24，不在设备上编译源码，也不使用 Docker。Lite 版首次打开 Manager 后安装官方 Hermes Studio；Offline 版从包内已校验归档恢复。"
+                "helpText": "<br>本包使用 fnOS 提供的 nodejs_v24，不在设备上编译源码，也不使用 Docker。首次打开 Manager 后可从官方源或所选 npm 镜像安装 Hermes Studio。"
             },
             {
                 "type": "tips",
