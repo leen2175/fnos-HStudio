@@ -4,7 +4,7 @@
 
 项目仓库：https://github.com/leen2175/fnos-HStudio
 
-fnOS 应用身份固定为 `appname=HStudio`。当前 FPK 版本为 `0.0.59`，目标平台为 x86_64，Hermes Studio 使用上游默认端口 8648。
+fnOS 应用身份固定为 `appname=HStudio`。当前 FPK 版本为 `0.0.60`，目标平台为 x86_64，Hermes Studio 使用上游默认端口 8648。
 
 ## 项目结构
 
@@ -24,7 +24,7 @@ fnOS 应用身份固定为 `appname=HStudio`。当前 FPK 版本为 `0.0.59`，�
 - FPK 内置 fnOS 官方公共工具 `trim-cli` 的 Skill 和 Linux x86_64/ARM64 CLI。安装时默认部署到 Hermes、Codex/Pi、Claude Code 的发现目录；已有 Skill 保留不覆盖。HStudio 运行时使用的架构匹配副本位于 `data/tools/bin/trim-cli`；`usr-local-linker` 暴露的是包内 Skill wrapper，由它选择对应架构的 CLI。
 - 启动 Studio 前会把当前 Runtime 的 `dist/skills` 与 `trim-cli` 原子合并为托管源，避免 `HERMES_WEB_UI_SKILLS_DIR` 的排他语义遮蔽上游内置 Skills。
 
-Manager 通过 Unix socket 提供本地 API，并由 `app/ui/config` 注册只读桌面入口。界面只有“总览”“Agents”“设置”三个标签；总览同时展示 HStudio、Hermes Studio Runtime 状态及启动、停止、重启和更新操作。顶部的“打开 Hermes Studio”优先使用可选的 `HSTUDIO_PUBLIC_URL`；未配置时，域名入口沿用 fnOS 的 `hstudio.<主机>` 形式，IP/localhost 则使用同主机的实际服务端口。桌面图标仍指向 fnOS 注册的应用入口。管理员操作要求 fnOS 网关注入的 `X-Trim-Userid` 与 `X-Trim-Isadmin` 请求头；明确的 cross-site 请求会被拒绝，日志在完整输出边界统一脱敏 token、cookie、password 等敏感字段。
+Manager 通过 Unix socket 提供本地 API，并由 `app/ui/config` 注册为唯一的只读桌面入口。界面只有“总览”“Agents”“设置”三个标签；总览同时展示 HStudio、Hermes Studio Runtime 状态及启动、停止、重启和更新操作。顶部的“打开 Hermes Studio”优先使用可选的 `HSTUDIO_PUBLIC_URL`；未配置时，域名入口沿用 fnOS 的 `hstudio.<主机>` 形式，IP/localhost 则使用同主机的实际服务端口。设置页可选在 Runtime 健康时每个 Manager 会话尝试自动打开一次 Hermes Studio，浏览器拦截时仍使用右上角手动入口。管理员操作要求 fnOS 网关注入的 `X-Trim-Userid` 与 `X-Trim-Isadmin` 请求头；明确的 cross-site 请求会被拒绝，日志在完整输出边界统一脱敏 token、cookie、password 等敏感字段。
 
 设置页的 FPK 更新功能当前只读取 `leen2175/fnos-HStudio` 的最新 GitHub Release，以结构化状态展示当前版本、最新版本、检查时间和发布页，与 Studio Runtime 更新相互独立；无 Release、检查失败与确有更新是不同状态。缓存命中时仍会按当前 FPK 重新比较版本，网络失败使用短期缓存避免反复请求。该功能尚不校验 Release 中是否存在兼容的 FPK，也不会下载或安装 FPK，因此不能更新 Manager 自身。完整 FPK 升级仍需通过 fnOS 应用中心手动安装，开发或重复测试也可使用 `appcenter-cli install-fpk`。
 
@@ -54,6 +54,6 @@ Hermes Studio `v0.7.16` 推荐的 Hermes Agent 为 `0.20.6`，源码 ref 为 `v2
 
 HStudio 适配层采用 [MIT License](LICENSE)。Hermes Studio Runtime 使用 BSL-1.1：附加授权仅允许非商业用途，商业使用需要 EKKOLearnAI 的单独许可，并将在 2029-05-10 转为 Apache-2.0。`trim-cli` 按 fnOS 官方公共工具处理并随 FPK 提供，仍不受适配层 MIT 许可证覆盖。完整边界见 [第三方声明](licenses/THIRD-PARTY-NOTICES.md)。
 
-CI 只构建不携带 Runtime 的 Lite FPK，并按实际包含的 `trim-cli` 执行许可闸门。工作流保持只读权限，不能创建公共 GitHub Release。
+CI 构建不携带 Runtime 的在线 FPK，并按实际包含的 `trim-cli` 执行许可闸门。普通构建只上传短期 Actions Artifact；推送与 `manifest` 版本一致的 `v<version>` 标签时，独立发布任务会自动创建 GitHub Release，并附加 `fnos-HStudio-v<version>.fpk` 与 SHA-256 文件。
 
 详细设计、迁移、构建和上游约束位于 [`docs/`](docs/)。

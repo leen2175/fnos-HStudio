@@ -1,5 +1,5 @@
 appname               = HStudio
-version               = 0.0.59
+version               = 0.0.60
 display_name          = "HStudio"
 desc                  = "Hermes Studio fnOS 在线适配器，包含 Manager 与 trim-cli 公共工具；Studio Runtime、Hermes Agent、Node.js 和 Python 均不打入 FPK。"
 platform              = x86
@@ -9,7 +9,7 @@ maintainer_url        = https://github.com/leen2175/fnos-HStudio
 distributor           = leen2175
 distributor_url       = https://github.com/leen2175/fnos-HStudio
 desktop_uidir         = ui
-desktop_applaunchname = HStudio.Application
+desktop_applaunchname = HStudio.Manager
 micro_app             = true
 install_dep_apps      = nodejs_v24:python312
 service_port          = 8648

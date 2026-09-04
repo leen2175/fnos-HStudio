@@ -1,16 +1,7 @@
 {
   ".url": {
-    "HStudio.Application": {
-      "title": "HStudio",
-      "icon": "images/icon_{0}.png",
-      "type": "url",
-      "protocol": "",
-      "port": "8648",
-      "url": "/",
-      "allUsers": false
-    },
     "HStudio.Manager": {
-      "title": "HStudio 管理",
+      "title": "HStudio",
       "icon": "images/icon_{0}.png",
       "type": "iframe",
       "protocol": "",

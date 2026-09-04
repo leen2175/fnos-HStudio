@@ -39,6 +39,7 @@ class BuildFpkTests(unittest.TestCase):
             BUILDER.OUT = pathlib.Path(temporary)
             result = BUILDER.build(BUILDER.package_version())
             self.assertTrue(result.is_file())
+            self.assertEqual(result.name, f"fnos-HStudio-v{BUILDER.package_version()}.fpk")
             first_fpk = result.read_bytes()
             with tarfile.open(result, "r:gz") as outer:
                 for member in outer.getmembers():
@@ -100,7 +101,7 @@ class BuildFpkTests(unittest.TestCase):
             path.write_text("must not enter an FPK\n", encoding="utf-8")
         try:
             with tempfile.TemporaryDirectory() as temporary:
-                output = pathlib.Path(temporary) / "lite.fpk"
+                output = pathlib.Path(temporary) / "package.fpk"
                 BUILDER._write_fpk(
                     output,
                     BUILDER.package_version(),
@@ -132,6 +133,18 @@ class BuildFpkTests(unittest.TestCase):
     def test_requested_version_must_equal_root_manifest(self) -> None:
         with self.assertRaisesRegex(ValueError, "does not match root manifest"):
             BUILDER.checked_package_version("999.999.999")
+
+    def test_canonical_name_replaces_legacy_lite_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            BUILDER.OUT = pathlib.Path(temporary)
+            version = BUILDER.package_version()
+            legacy = BUILDER.OUT / f"fnos-HStudio-lite-v{version}.fpk"
+            legacy.write_bytes(b"legacy")
+            legacy.with_suffix(".fpk.sha256").write_text("legacy\n", encoding="utf-8")
+            result = BUILDER.build(version)
+            self.assertTrue(result.is_file())
+            self.assertFalse(legacy.exists())
+            self.assertFalse(legacy.with_suffix(".fpk.sha256").exists())
 
     def test_hermes_agent_pin_and_lock_are_fail_closed(self) -> None:
         self.assertEqual(

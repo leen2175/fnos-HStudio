@@ -18,4 +18,4 @@ HStudio 的 fnOS 适配、生命周期、Manager 和构建系统均在本仓库�
 
 `trim-cli` 按 fnOS 官方公共工具使用，`.agents/skills/trim-cli` 是本项目唯一打包源，只保留 Skill 文档、Linux wrapper、Linux x86_64 与 ARM64 CLI。两个二进制的 SHA-256 记录在 `config/runtime-manifest.json` 并在构建时校验。
 
-定时 `upstream-watch` 负责报告首次安装基线落后；Manager 则按 npm 严格 SemVer 更新。CI 只验证和上传不携带 Hermes Studio Runtime 的 Lite 检查产物。
+定时 `upstream-watch` 负责报告首次安装基线落后；Manager 则按 npm 严格 SemVer 更新。CI 验证并上传不携带 Hermes Studio Runtime 的在线 FPK，版本标签构建通过后自动发布 GitHub Release。

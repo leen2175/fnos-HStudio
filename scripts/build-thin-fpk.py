@@ -17,7 +17,7 @@ from pathlib import Path, PurePosixPath
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "artifacts"
 PROJECT_SLUG = "fnos-HStudio"
-FPK_NAME = re.compile(r"(?:fnos-HStudio|HStudio)-lite-v(.+)\.fpk$")
+FPK_NAME = re.compile(r"(?:fnos-HStudio|HStudio)(?:-lite)?-v(.+)\.fpk$")
 TRIM_CLI_SKILL = ROOT / ".agents" / "skills" / "trim-cli"
 PROJECT_LICENSE = ROOT / "LICENSE"
 THIRD_PARTY_NOTICE = ROOT / "licenses" / "THIRD-PARTY-NOTICES.md"
@@ -330,11 +330,18 @@ def prune_old_fpk(keep_versions: int) -> None:
         match = FPK_NAME.fullmatch(package.name)
         if match:
             versions.setdefault(match.group(1), []).append(package)
-    keep = set(sorted(versions, key=version_key, reverse=True)[: max(1, keep_versions)])
+    canonical_versions = {
+        version
+        for version in versions
+        if (OUT / f"{PROJECT_SLUG}-v{version}.fpk").exists()
+    }
+    version_pool = canonical_versions or set(versions)
+    keep = set(sorted(version_pool, key=version_key, reverse=True)[: max(1, keep_versions)])
     for version, files in versions.items():
-        if version in keep:
-            continue
+        canonical = OUT / f"{PROJECT_SLUG}-v{version}.fpk"
         for package in files:
+            if version in keep and (package == canonical or not canonical_versions):
+                continue
             package.unlink()
             sidecar = package.with_suffix(package.suffix + ".sha256")
             if sidecar.exists():
@@ -532,7 +539,7 @@ def build(
     )
     validate_license_file(package_manifest["studio"])
     validate_hermes_agent_release(package_manifest)
-    output = OUT / f"{PROJECT_SLUG}-lite-v{resolved_version}.fpk"
+    output = OUT / f"{PROJECT_SLUG}-v{resolved_version}.fpk"
     _write_fpk(output, resolved_version, package_manifest)
     sha256 = file_sha256(output)
     output.with_suffix(output.suffix + ".sha256").write_text(

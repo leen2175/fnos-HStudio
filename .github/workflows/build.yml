@@ -21,6 +21,9 @@ jobs:
     name: Test, verify, and build FPK
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    outputs:
+      package_version: ${{ steps.runtime.outputs.package_version }}
+      release_approved: ${{ steps.license.outputs.release_approved }}
     steps:
       - name: Check out HStudio
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -124,44 +127,80 @@ jobs:
 
           metadata = json.loads(pathlib.Path("config/runtime-manifest.json").read_text(encoding="utf-8"))
           trim_status = metadata["trimCli"].get("licenseStatus")
-          lite_approved = trim_status == "redistribution-approved"
+          release_approved = trim_status == "redistribution-approved"
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-              output.write(f"lite_approved={str(lite_approved).lower()}\n")
-          if not lite_approved:
-              print("::warning title=Lite publication blocked::trim-cli redistribution approval is incomplete.")
+              output.write(f"release_approved={str(release_approved).lower()}\n")
+          if not release_approved:
+              print("::warning title=Publication blocked::trim-cli redistribution approval is incomplete.")
           PY
-          echo "This workflow has read-only contents permission and cannot create a GitHub Release."
 
-      - name: Build verified Lite FPK
+      - name: Build verified FPK
         shell: bash
         run: |
           set -euo pipefail
           python3 scripts/build-thin-fpk.py --output-dir artifacts
 
-      - name: Verify Lite checksum and exact output set
+      - name: Verify checksum and exact output set
         env:
           PACKAGE_VERSION: ${{ steps.runtime.outputs.package_version }}
         shell: bash
         run: |
           set -euo pipefail
-          lite="artifacts/fnos-HStudio-lite-v${PACKAGE_VERSION}.fpk"
-          test -f "$lite"
+          package="artifacts/fnos-HStudio-v${PACKAGE_VERSION}.fpk"
+          test -f "$package"
           mapfile -t packages < <(find artifacts -maxdepth 1 -type f -name '*.fpk' -print)
           test "${#packages[@]}" -eq 1 || {
             printf 'Unexpected FPK output: %s\n' "${packages[*]}" >&2
             exit 1
           }
-          (cd artifacts && sha256sum --check --strict "$(basename "$lite").sha256")
+          (cd artifacts && sha256sum --check --strict "$(basename "$package").sha256")
 
-      - name: Upload redistribution-approved Lite artifact
-        if: steps.license.outputs.lite_approved == 'true'
+      - name: Upload redistribution-approved artifact
+        if: steps.license.outputs.release_approved == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: fnos-HStudio-${{ steps.runtime.outputs.package_version }}-lite-CI-only
+          name: fnos-HStudio-${{ steps.runtime.outputs.package_version }}
           path: |
-            artifacts/fnos-HStudio-lite-*.fpk
-            artifacts/fnos-HStudio-lite-*.fpk.sha256
+            artifacts/fnos-HStudio-v*.fpk
+            artifacts/fnos-HStudio-v*.fpk.sha256
             artifacts/ARTIFACTS.md
           if-no-files-found: error
           retention-days: 14
           compression-level: 0
+
+  publish-release:
+    name: Publish tagged FPK release
+    if: startsWith(github.ref, 'refs/tags/v') && needs.verify-and-build.outputs.release_approved == 'true'
+    needs: verify-and-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified FPK
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: fnos-HStudio-${{ needs.verify-and-build.outputs.package_version }}
+          path: artifacts
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_VERSION: ${{ needs.verify-and-build.outputs.package_version }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_tag="v${PACKAGE_VERSION}"
+          test "$RELEASE_TAG" = "$expected_tag" || {
+            printf 'Tag %s does not match manifest version %s\n' "$RELEASE_TAG" "$PACKAGE_VERSION" >&2
+            exit 1
+          }
+          package="artifacts/fnos-HStudio-v${PACKAGE_VERSION}.fpk"
+          checksum="${package}.sha256"
+          test -f "$package"
+          test -f "$checksum"
+          gh release create "$RELEASE_TAG" "$package" "$checksum" \
+            --verify-tag \
+            --generate-notes \
+            --title "HStudio ${PACKAGE_VERSION}"
