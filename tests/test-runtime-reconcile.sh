@@ -18,17 +18,6 @@ cat > "$NODE_ROOT/bin/node" <<'EOF'
 set -eu
 if [ "${1:-}" = --version ]; then echo v24.15.0; exit 0; fi
 if [ "${1:-}" = -e ]; then
-  if [ "${3:-}" = hstudio-runtime-manifest ]; then
-    python3 - "${4:-}" <<'PY'
-import json, re, sys
-studio=json.load(open(sys.argv[1], encoding='utf-8'))['studio']
-if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?', studio['version']): raise SystemExit(2)
-if not re.fullmatch(r'[0-9a-fA-F]{64}', studio['sha256']): raise SystemExit(2)
-if isinstance(studio['size'], bool) or not isinstance(studio['size'], int) or studio['size'] < 1: raise SystemExit(2)
-print(studio['version']); print(studio['sha256'].lower()); print(studio['size'])
-PY
-    exit $?
-  fi
   if [ "${3:-}" = hstudio-bounded ]; then shift 4; exec "$0" "$@"; fi
   exit 0
 fi
@@ -132,92 +121,20 @@ kill -TERM "$user_pid" 2>/dev/null || true
 wait "$user_pid" 2>/dev/null || true
 rm -f "$DATA/hermes-home/server.pid"
 
-# When current changes from an old bundled version to a new one, reconcile must
-# stop the actual old process and start the newly selected Runtime.
-rm -rf "$DATA/.npm-global"
+# Saved bundled preferences must not select a second local installation.
 printf '%s\n' '{"preferredRuntime":"bundled"}' > "$DATA/manager/state.json"
-HERMES_WEB_UI_HOME="$DATA/hermes-home" "$BUNDLED_A/dist/server/index.js" &
-old_pid=$!
-printf '%s\n' "$old_pid" > "$DATA/hermes-home/server.pid"
-env "${COMMON[@]}" bash "$APP/cmd/main" bootstrap-complete
-wait "$old_pid" 2>/dev/null || true
-! kill -0 "$old_pid" 2>/dev/null
-for _ in 1 2 3 4 5; do grep -q '^start:' "$CALLS" 2>/dev/null && break; sleep 1; done
-grep -Fq "stop:$BUNDLED_A/bin/hermes-web-ui.mjs" "$CALLS"
-grep -Fq "start:$BUNDLED_C/bin/hermes-web-ui.mjs" "$CALLS"
-
-env "${COMMON[@]}" bash "$APP/cmd/main" stop
-
-# A dangling current pointer must still start the healthy previous Runtime.
-rm -f "$DATA/runtime/studio/current" "$DATA/runtime/studio/previous" "$CALLS"
-ln -s missing "$DATA/runtime/studio/current"
-ln -s 0.7.15 "$DATA/runtime/studio/previous"
 env "${START_COMMON[@]}" bash "$APP/cmd/main" studio-start
-for _ in 1 2 3 4 5; do grep -Fq "start:$BUNDLED_A/bin/hermes-web-ui.mjs" "$CALLS" 2>/dev/null && break; sleep 1; done
-grep -Fq "start:$BUNDLED_A/bin/hermes-web-ui.mjs" "$CALLS"
-test "$(readlink "$DATA/runtime/studio/current")" = 0.7.15
+grep -Fq "start:$USER_PACKAGE/bin/hermes-web-ui.mjs" "$CALLS"
+! grep -Fq "start:$BUNDLED_C/bin/hermes-web-ui.mjs" "$CALLS"
 env "${START_COMMON[@]}" bash "$APP/cmd/main" stop
 
-# A later Runtime D can pass CLI health but fail its real HTTP startup. Because
-# B was promoted after the previous fallback, D can rotate B into previous and
-# the verified startup path still falls back to B, then promotes B again.
-make_runtime "$BUNDLED_D" 0.7.17
-rm -f "$DATA/runtime/studio/current" "$DATA/runtime/studio/previous" "$CALLS"
-ln -s 0.7.17 "$DATA/runtime/studio/current"
-ln -s 0.7.15 "$DATA/runtime/studio/previous"
-env "${START_COMMON[@]}" HERMES_TEST_START_FAIL_ENTRY="$BUNDLED_D/bin/hermes-web-ui.mjs" \
-  bash "$APP/cmd/main" studio-start
-grep -Fq "start:$BUNDLED_D/bin/hermes-web-ui.mjs" "$CALLS"
-grep -Fq "start:$BUNDLED_A/bin/hermes-web-ui.mjs" "$CALLS"
-test "$(readlink "$DATA/runtime/studio/current")" = 0.7.15
-env "${START_COMMON[@]}" bash "$APP/cmd/main" stop
-
-# A healthy managed process must only make studio-start idempotent when it is
-# the exact selected Runtime. Replace a healthy old B process with selected E.
-make_runtime "$BUNDLED_E" 0.7.18
-rm -f "$DATA/runtime/studio/current" "$DATA/runtime/studio/previous" "$CALLS"
-ln -s 0.7.18 "$DATA/runtime/studio/current"
-ln -s 0.7.15 "$DATA/runtime/studio/previous"
-HERMES_WEB_UI_HOME="$DATA/hermes-home" "$BUNDLED_A/dist/server/index.js" &
-mismatched_pid=$!
-printf '%s\n' "$mismatched_pid" > "$DATA/hermes-home/server.pid"
-env "${START_COMMON[@]}" bash "$APP/cmd/main" studio-start
-wait "$mismatched_pid" 2>/dev/null || true
-! kill -0 "$mismatched_pid" 2>/dev/null
-grep -Fq "start:$BUNDLED_E/bin/hermes-web-ui.mjs" "$CALLS"
-env "${START_COMMON[@]}" bash "$APP/cmd/main" stop
-
-# Replacing an archive with the same package version stores the old tree under
-# a unique backup name. If the new tree fails HTTP startup, promote that exact
-# healthy previous target rather than resolving the shared semantic version.
-make_runtime "$BUNDLED_F" 0.7.19
-make_runtime "$BUNDLED_F_BACKUP" 0.7.19
-rm -f "$DATA/runtime/studio/current" "$DATA/runtime/studio/previous" "$CALLS"
-ln -s 0.7.19 "$DATA/runtime/studio/current"
-ln -s 0.7.19.previous.test "$DATA/runtime/studio/previous"
-env "${START_COMMON[@]}" HERMES_TEST_START_FAIL_ENTRY="$BUNDLED_F/bin/hermes-web-ui.mjs" \
-  bash "$APP/cmd/main" studio-start
-grep -Fq "start:$BUNDLED_F/bin/hermes-web-ui.mjs" "$CALLS"
-grep -Fq "start:$BUNDLED_F_BACKUP/bin/hermes-web-ui.mjs" "$CALLS"
-test "$(readlink "$DATA/runtime/studio/current")" = 0.7.19.previous.test
-test "$(readlink "$DATA/runtime/studio/previous")" = 0.7.19
-
-# A later bootstrap of the same manifest version must accept the exact healthy
-# current backup. It must not reactivate the failed semantic-version directory
-# or restart the already healthy process.
-mkdir -p "$APP/config/bootstrap" "$APP/skills"
-printf '%s\n' 'HERMES_STUDIO_VERSION=0.7.19' > "$APP/config/bootstrap/hermes-studio-version.env"
-printf '%s\n' \
-  '{"schema":1,"studio":{"version":"0.7.19","sha256":"0000000000000000000000000000000000000000000000000000000000000000","size":1,"urls":[]}}' \
-  > "$APP/config/runtime-manifest.json"
-cp -R "$ROOT/.agents/skills/trim-cli" "$APP/skills/trim-cli"
-stable_pid="$(cat "$DATA/hermes-home/server.pid")"
-calls_before="$(wc -l < "$CALLS")"
-env "${START_COMMON[@]}" HSTUDIO_RUNTIME_BOOTSTRAP=1 bash "$APP/cmd/install_callback"
-kill -0 "$stable_pid" 2>/dev/null
-test "$(cat "$DATA/hermes-home/server.pid")" = "$stable_pid"
-test "$(readlink "$DATA/runtime/studio/current")" = 0.7.19.previous.test
-test "$(wc -l < "$CALLS")" = "$calls_before"
-env "${START_COMMON[@]}" bash "$APP/cmd/main" stop
-
-echo 'PASS bootstrap completion preserves user Runtime and reconciles changed bundled Runtime'
+# Keep recognizing old processes for safe shutdown, but never start an old
+# archive automatically when the official npm installation is missing.
+rm -rf "$DATA/.npm-global"
+if env "${START_COMMON[@]}" bash "$APP/cmd/main" studio-start; then
+  echo 'unexpected legacy Runtime fallback' >&2
+  exit 1
+fi
+test -d "$BUNDLED_A"
+test -d "$BUNDLED_C"
+echo 'PASS single npm installation and no local version fallback'

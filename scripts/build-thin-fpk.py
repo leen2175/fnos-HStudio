@@ -21,14 +21,12 @@ FPK_NAME = re.compile(r"(?:fnos-HStudio|HStudio)(?:-lite)?-v(.+)\.fpk$")
 TRIM_CLI_SKILL = ROOT / ".agents" / "skills" / "trim-cli"
 PROJECT_LICENSE = ROOT / "LICENSE"
 THIRD_PARTY_NOTICE = ROOT / "licenses" / "THIRD-PARTY-NOTICES.md"
-HERMES_AGENT_REQUIREMENTS = ROOT / "app" / "hermes-agent" / "requirements.txt"
 # Keep package inputs reviewable; recursive directory scans also capture ignored local files.
 APP_PAYLOAD_FILES = (
     ("app/bin/hermes-web-ui", "bin/hermes-web-ui"),
     ("app/ui/config", "ui/config"),
     ("app/ui/images/icon_64.png", "ui/images/icon_64.png"),
     ("app/ui/images/icon_256.png", "ui/images/icon_256.png"),
-    ("app/hermes-agent/requirements.txt", "hermes-agent/requirements.txt"),
     ("manager/backend/server.mjs", "manager/backend/server.mjs"),
     ("manager/frontend/index.html", "manager/frontend/index.html"),
 )
@@ -39,7 +37,10 @@ TRIM_CLI_FILES = (
     "entries/trim-download.md",
     "entries/trim-file.md",
     "entries/trim-log.md",
+    "entries/trim-media.md",
     "entries/trim-monitor.md",
+    "entries/trim-network.md",
+    "entries/trim-photos.md",
     "entries/trim-shared.md",
     "entries/trim-storage.md",
     "entries/trim-system.md",
@@ -51,12 +52,19 @@ TRIM_CLI_FILES = (
     "reference/download.md",
     "reference/file.md",
     "reference/log.md",
+    "reference/media.md",
+    "reference/network.md",
+    "reference/photos.md",
+    "reference/power.md",
     "reference/resmon.md",
     "reference/stor.md",
     "reference/sysinfo.md",
     "reference/user.md",
     "reference/workflows/device-validation.md",
     "reference/workflows/file-routing.md",
+    "reference/workflows/file-upload-validation.md",
+    "reference/workflows/media-routing.md",
+    "reference/workflows/photos-routing.md",
     "reference/workflows/storage-dangerous-ops.md",
     "scripts/trim-cli",
     "bin/trim-cli-linux-arm64",
@@ -65,9 +73,7 @@ TRIM_CLI_FILES = (
 OUTER_PAYLOAD_FILES = (
     "cmd/install_callback",
     "cmd/install_init",
-    "cmd/lib/download.sh",
     "cmd/lib/environment.sh",
-    "cmd/lib/migration.sh",
     "cmd/lib/process.sh",
     "cmd/lib/runtime.sh",
     "cmd/lib/skills.sh",
@@ -76,7 +82,6 @@ OUTER_PAYLOAD_FILES = (
     "cmd/uninstall_init",
     "cmd/upgrade_callback",
     "cmd/upgrade_init",
-    "config/bootstrap/hermes-studio-version.env",
     "config/privilege",
     "config/resource",
     "wizard/install",
@@ -290,34 +295,6 @@ def validate_license_file(studio: dict) -> tuple[Path, str]:
     return path, relative.as_posix()
 
 
-def validate_hermes_agent_release(package_manifest: dict) -> Path:
-    """Validate the Studio-owned Hermes Agent pin and generated dependency lock."""
-    agent = package_manifest.get("hermesAgent", {})
-    if not re.fullmatch(r"\d+\.\d+\.\d+", str(agent.get("version", ""))):
-        raise ValueError("Hermes Agent version pin is invalid")
-    if not re.fullmatch(r"EKKOLearnAI/hermes-studio@v\d+\.\d+\.\d+", str(agent.get("source", ""))):
-        raise ValueError("Hermes Agent pin must come from an EKKOLearnAI/hermes-studio release")
-    if agent.get("repository") != "https://github.com/NousResearch/hermes-agent.git":
-        raise ValueError("Hermes Agent repository is not the official HTTPS origin")
-    if agent.get("installMethod") != "git" or not str(agent.get("ref", "")):
-        raise ValueError("Hermes Agent Git source metadata is invalid")
-    if not re.fullmatch(r"[0-9a-f]{40}", str(agent.get("commit", ""))):
-        raise ValueError("Hermes Agent full commit pin is required")
-    expected_extras = ["all", "messaging", "slack", "matrix", "wecom", "dingtalk", "feishu"]
-    if agent.get("extras") != expected_extras:
-        raise ValueError("Hermes Agent extras differ from the Hermes Studio desktop runtime")
-    requirements = agent.get("requirements", {})
-    if requirements.get("path") != "hermes-agent/requirements.txt":
-        raise ValueError("Hermes Agent requirements path is invalid")
-    if not HERMES_AGENT_REQUIREMENTS.is_file():
-        raise FileNotFoundError(f"Hermes Agent requirements missing: {HERMES_AGENT_REQUIREMENTS}")
-    if HERMES_AGENT_REQUIREMENTS.stat().st_size != int(requirements.get("size", 0)):
-        raise ValueError("Hermes Agent requirements size drift")
-    if file_sha256(HERMES_AGENT_REQUIREMENTS) != str(requirements.get("sha256", "")).lower():
-        raise ValueError("Hermes Agent requirements checksum drift")
-    return HERMES_AGENT_REQUIREMENTS
-
-
 def version_key(version: str) -> tuple[int, ...]:
     return tuple(int(part) for part in re.findall(r"\d+", version))
 
@@ -449,7 +426,6 @@ def validate_built_fpk(path: Path, version: str, package_manifest: dict) -> None
                 "bin/hermes-web-ui",
                 "manager/backend/server.mjs",
                 "manager/frontend/index.html",
-                "hermes-agent/requirements.txt",
                 "skills/trim-cli/SKILL.md",
                 "skills/trim-cli/scripts/trim-cli",
                 "skills/trim-cli/bin/trim-cli-linux-x64",
@@ -481,13 +457,6 @@ def validate_built_fpk(path: Path, version: str, package_manifest: dict) -> None
             license_sha256, _ = stream_sha256(license_stream)
             if license_sha256 != str(package_manifest["studio"]["licenseSha256"]).lower():
                 raise ValueError("packaged Runtime LICENSE differs from runtime-manifest.json")
-            requirements_stream = app.extractfile("hermes-agent/requirements.txt")
-            if requirements_stream is None:
-                raise ValueError("packaged Hermes Agent requirements are unreadable")
-            requirements_sha256, requirements_size = stream_sha256(requirements_stream)
-            requirements = package_manifest["hermesAgent"]["requirements"]
-            if requirements_size != int(requirements["size"]) or requirements_sha256 != str(requirements["sha256"]).lower():
-                raise ValueError("packaged Hermes Agent requirements differ from runtime-manifest.json")
             runtime_members = sorted(name for name in app_names if name.startswith("runtime/"))
             if runtime_members:
                 raise ValueError("FPK unexpectedly contains a Runtime archive")
@@ -538,7 +507,6 @@ def build(
         (ROOT / "config/runtime-manifest.json").read_text(encoding="utf-8")
     )
     validate_license_file(package_manifest["studio"])
-    validate_hermes_agent_release(package_manifest)
     output = OUT / f"{PROJECT_SLUG}-v{resolved_version}.fpk"
     _write_fpk(output, resolved_version, package_manifest)
     sha256 = file_sha256(output)

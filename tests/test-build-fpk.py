@@ -60,11 +60,7 @@ class BuildFpkTests(unittest.TestCase):
                 notice = app.extractfile("licenses/THIRD-PARTY-NOTICES.md").read()
                 self.assertIn(b"trim-cli", notice)
                 self.assertIn(b"official public tool", notice)
-                requirements = app.extractfile("hermes-agent/requirements.txt").read()
-                self.assertEqual(
-                    hashlib.sha256(requirements).hexdigest(),
-                    self.package_manifest["hermesAgent"]["requirements"]["sha256"],
-                )
+                self.assertNotIn("hermes-agent/requirements.txt", app.getnames())
                 license_name = self.package_manifest["studio"]["licenseFile"]
                 license_bytes = app.extractfile(license_name).read()
                 self.assertEqual(
@@ -145,20 +141,6 @@ class BuildFpkTests(unittest.TestCase):
             self.assertTrue(result.is_file())
             self.assertFalse(legacy.exists())
             self.assertFalse(legacy.with_suffix(".fpk.sha256").exists())
-
-    def test_hermes_agent_pin_and_lock_are_fail_closed(self) -> None:
-        self.assertEqual(
-            BUILDER.validate_hermes_agent_release(self.package_manifest),
-            ROOT / "app" / "hermes-agent" / "requirements.txt",
-        )
-        changed = json.loads(json.dumps(self.package_manifest))
-        changed["hermesAgent"]["commit"] = "main"
-        with self.assertRaisesRegex(ValueError, "full commit"):
-            BUILDER.validate_hermes_agent_release(changed)
-        changed = json.loads(json.dumps(self.package_manifest))
-        changed["hermesAgent"]["requirements"]["sha256"] = "0" * 64
-        with self.assertRaisesRegex(ValueError, "checksum drift"):
-            BUILDER.validate_hermes_agent_release(changed)
 
     def test_trim_cli_elf_architecture_is_enforced(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

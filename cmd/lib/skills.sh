@@ -16,18 +16,8 @@ prepare_hermes_skill_source() {
     fi
     runtime_root="$(CDPATH='' cd -- "$(dirname -- "$resolved")/.." 2>/dev/null && pwd)" || return 1
     upstream_skills=""
-    for candidate in \
-        "$runtime_root/dist/skills" \
-        "${NPM_GLOBAL:-}/lib/node_modules/hermes-web-ui/dist/skills" \
-        "${runtime_bundled_root:-}/current/dist/skills" \
-        "${runtime_legacy_root:-}/dist/skills" \
-        "${runtime_legacy_root:-}/lib/node_modules/hermes-web-ui/dist/skills"; do
-        if [ -d "$candidate" ]; then
-            upstream_skills="$candidate"
-            break
-        fi
-    done
-    [ -n "$upstream_skills" ] || return 1
+    upstream_skills="$runtime_root/dist/skills"
+    [ -d "$upstream_skills" ] || return 1
 
     target="${HERMES_WEB_UI_SKILLS_DIR:?}"
     parent="$(dirname -- "$target")"

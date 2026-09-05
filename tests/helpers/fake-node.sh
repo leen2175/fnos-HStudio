@@ -9,33 +9,6 @@ if [ "${1:-}" = --version ]; then
 fi
 
 if [ "${1:-}" = -e ]; then
-    if [ "${3:-}" = hstudio-runtime-manifest ]; then
-        python3 - "${4:-}" <<'PY'
-import json
-import re
-import sys
-
-try:
-    value = json.load(open(sys.argv[1], encoding="utf-8"))
-    studio = value["studio"]
-    version = studio["version"]
-    digest = studio["sha256"]
-    size = studio["size"]
-    semver = re.compile(r"^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$")
-    if not isinstance(version, str) or not semver.fullmatch(version):
-        raise ValueError
-    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", digest):
-        raise ValueError
-    if isinstance(size, bool) or not isinstance(size, int) or size < 1:
-        raise ValueError
-except Exception:
-    raise SystemExit(2)
-print(version)
-print(digest.lower())
-print(size)
-PY
-        exit $?
-    fi
     case "${3:-}" in
         hstudio-bounded)
             [ -z "${HERMES_TEST_BOUNDED_LOG:-}" ] || printf '%s\n' "${4:-}" >> "$HERMES_TEST_BOUNDED_LOG"

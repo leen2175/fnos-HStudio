@@ -12,9 +12,67 @@ const managerTestLifecycle=path.join(managerTestData,'lifecycle')
 fs.mkdirSync(path.join(managerTestLifecycle,'cmd'),{recursive:true})
 fs.writeFileSync(path.join(managerTestLifecycle,'cmd','main'),'#!/bin/sh\nexit 1\n',{mode:0o755})
 process.env.LIFECYCLE_ROOT=managerTestLifecycle
-const {agentManaged, agentPackageRoot, agentReadiness, apiPermissionError, authSnapshot, beginStudioPublish, bootstrapInProgress, bootstrapProcessMatches, captureCommand, cleanupHermesBackup, cleanupStudioGarbage, cleanupStudioStaging, compareSemver, controlStudio, csrfOk, desktopHermesRuntimes, desktopRuntimeAgentLayout, drainStudioUpdateForShutdown, fpkCacheForCurrent, fpkCacheForRepository, fpkUpdate, hermesAgent, hermesAgentEnvironment, hermesAgentStudioCompatibility, hermesAgentVersionPolicy, hermesInstallDirectory, lifecycleConflict, managerConfig, npmProcessGroupAlive, npmProcessMatches, npmRegistry, operationForId, operationView, parseSemver, persistentNpmOperation, pythonRegistry, pythonVersionFromText, readStudioRecoveryJournal, recoverStudioPublish, redacted, rememberOutput, restoreStudioPublish, rollbackStudioAfterStop, runningNpmOperation, runningStudioStartOperation, setNpmRegistry, setPythonRegistry, stopStudioForRecoverySync, studioServicePort, studioUpdatePolicy, supportedPythonVersion, terminateCommand, trustedHermesAgentOrigin, updateStudio, validateHermesAgentRelease, validatedPublicUrl, validateStudioPackage, verifiedStudioPid, verifiedStudioProcess, versionFromText} = await import('../manager/backend/server.mjs')
+const {agentManaged, agentPackageRoot, agentReadiness, apiPermissionError, authSnapshot, beginStudioPublish, bootstrapInProgress, bootstrapProcessMatches, captureCommand, cleanupStudioGarbage, cleanupStudioStaging, compareSemver, controlStudio, csrfOk, desktopHermesRuntimes, desktopRuntimeAgentLayout, drainStudioUpdateForShutdown, fpkCacheForCurrent, fpkCacheForRepository, fpkUpdate, hermesAgent, lifecycleConflict, managerConfig, npmProcessGroupAlive, npmProcessMatches, npmRegistry, operationForId, operationView, parseSemver, persistentNpmOperation, pythonRegistry, pythonVersionFromText, readStudioRecoveryJournal, recoverStudioPublish, redacted, rememberOutput, restoreStudioPublish, rollbackStudioAfterStop, runningNpmOperation, runningStudioStartOperation, setNpmRegistry, setPythonRegistry, stopStudioForRecoverySync, studioServicePort, studioUpdatePolicy, supportedPythonVersion, terminateCommand, updateStudio, validatedPublicUrl, validateStudioPackage, verifiedStudioPid, verifiedStudioProcess, versionFromText} = await import('../manager/backend/server.mjs')
 
 const request = (headers={}) => ({headers})
+const {codingAgentUpdate,installAgent,pythonRuntime}=await import('../manager/backend/server.mjs')
+const pythonProbes=[],probePython=async command=>{pythonProbes.push(command);return 'Python 3.12.13'}
+assert.deepEqual(await pythonRuntime(null,probePython),{available:false,path:'',version:'未安装或未启用'})
+assert.deepEqual(await pythonRuntime({pythonPath:''},probePython),{available:false,path:'',version:'不可用'})
+assert.equal((await pythonRuntime({pythonPath:'/runtime/python',activationError:'broken'},probePython)).version,'不可用')
+assert.equal(pythonProbes.length,0)
+assert.deepEqual(await pythonRuntime({pythonPath:'/runtime/python'},probePython),{available:true,path:'/runtime/python',version:'3.12.13'})
+assert.deepEqual(pythonProbes,['/runtime/python'])
+assert.equal((await pythonRuntime({pythonPath:'/runtime/python'},async()=>'' )).version,'检测失败')
+
+// Refresh is read-only, independent per agent, and compares the current install
+// against cached remote metadata again after an install (not a cached verdict).
+const updateCache=new Map(),updateCalls=[],registry='https://registry.npmmirror.com/'
+let remoteVersion='2.0.0',remoteAdapter='1.1.0',failPackage=''
+const queryVersion=async(command,args,options)=>{
+  updateCalls.push(args)
+  assert.equal(args[0],'view');assert.equal(args[2],'version');assert.equal(args[3],'--json')
+  assert.equal(args[4],`--registry=${registry}`);assert.equal(options.env.NPM_CONFIG_REGISTRY,registry)
+  assert.equal(options.timeoutMs,15000)
+  if(args[1]===`${failPackage}@latest`)throw Error('timeout')
+  return {stdout:JSON.stringify(args[1]==='pi-mcp-adapter@latest'?remoteAdapter:remoteVersion)}
+}
+const coding={name:'codex',packageName:'@openai/codex',version:'codex-cli 1.0.0',installed:true,ready:true}
+const queryOptions={cache:updateCache,registry,run:queryVersion}
+assert.equal((await codingAgentUpdate(coding,queryOptions)).reason,'not-checked');assert.equal(updateCalls.length,0)
+let available=await codingAgentUpdate(coding,{...queryOptions,refresh:true})
+assert.equal(available.latestVersion,'2.0.0');assert.equal(available.mainUpdateAvailable,true);assert.ok(available.checkedAt)
+assert.equal((await codingAgentUpdate({...coding,version:'v2.0.0'},queryOptions)).reason,'current');assert.equal(updateCalls.length,1)
+assert.equal((await codingAgentUpdate({...coding,version:'3.0.0'},queryOptions)).reason,'ahead-of-registry')
+assert.equal((await codingAgentUpdate({...coding,version:'garbage'},queryOptions)).reason,'invalid-version')
+assert.equal((await codingAgentUpdate({...coding,installed:false},queryOptions)).reason,'not-installed')
+assert.equal((await codingAgentUpdate(coding,{...queryOptions,registry:'https://registry.npmjs.org/'})).reason,'not-checked')
+remoteVersion='2.1.0';assert.equal((await codingAgentUpdate(coding,{...queryOptions,refresh:true})).latestVersion,'2.1.0')
+failPackage=coding.packageName
+const failures=await Promise.all([codingAgentUpdate(coding,{...queryOptions,refresh:true}),codingAgentUpdate({...coding,packageName:'@xai-official/grok'},{...queryOptions,refresh:true})])
+assert.equal(failures[0].reason,'check-failed');assert.equal(failures[0].latestVersion,'');assert.equal(failures[0].updateAvailable,false);assert.equal(failures[1].updateAvailable,true)
+failPackage='';remoteVersion='2.0.0'
+const pi={...coding,packageName:'@earendil-works/pi-coding-agent',version:'2.0.0',adapter:'pi-mcp-adapter',adapterVersion:'1.0.0'}
+const piUpdate=await codingAgentUpdate(pi,{...queryOptions,refresh:true})
+assert.equal(piUpdate.mainUpdateAvailable,false);assert.equal(piUpdate.adapterUpdateAvailable,true);assert.equal(piUpdate.latestAdapterVersion,'1.1.0')
+remoteAdapter='0.9.0';assert.equal((await codingAgentUpdate(pi,{...queryOptions,refresh:true})).reason,'ahead-of-registry')
+for(const stdout of ['not json','"invalid-version"','["2.0.0"]','{"version":"2.0.0"}'])assert.equal((await codingAgentUpdate(coding,{...queryOptions,refresh:true,run:async()=>({stdout})})).reason,'check-failed')
+for(const targets of [null,[],{version:'latest'},{version:'1.0.0; echo unsafe'},{other:'1.0.0'},{adapterVersion:'1.0.0'}])assert.equal(installAgent('codex',targets).error,'invalid_agent_version')
+for(const [targets,before,after,expectedPackages,error] of [
+  [{version:'2.1.0'},{version:'2.0.0',adapterVersion:'1.1.0'},{version:'2.1.0',adapterVersion:'1.1.0'},['@earendil-works/pi-coding-agent@2.1.0'],''],
+  [{adapterVersion:'1.2.0'},{version:'2.0.0',adapterVersion:'1.1.0'},{version:'2.0.0',adapterVersion:'1.2.0'},['pi-mcp-adapter@1.2.0'],''],
+  [{version:'2.1.0',adapterVersion:'1.2.0'},{version:'2.0.0',adapterVersion:'1.1.0'},{version:'2.1.0',adapterVersion:'1.2.0'},['@earendil-works/pi-coding-agent@2.1.0','pi-mcp-adapter@1.2.0'],''],
+  [{version:'1.0.0'},{version:'2.0.0'},null,[],'update_not_available'],
+  [{version:'2.0.0'},{version:'2.0.0'},null,[],'update_not_available'],
+  [{version:'2.1.0'},{version:'2.0.0'},{version:'2.0.0'},['@earendil-works/pi-coding-agent@2.1.0'],'installed_version_mismatch'],
+]){
+  let detects=0;const packages=[]
+  const result=installAgent('pi',targets,{detect:async()=>[{name:'pi',ready:true,...(detects++?after:before)}],run:async(op,command,args)=>{assert.equal(args[0],'install');packages.push(args.find(value=>/^(@earendil-works\/pi-coding-agent|pi-mcp-adapter)@/.test(value)))}})
+  assert.equal(result.ok,true)
+  await new Promise(resolve=>setImmediate(resolve))
+  const operation=operationForId(result.operation.id)
+  assert.equal(operation.status,error?'failed':'success');assert.equal(operation.message,error||'更新完成');assert.deepEqual(packages,expectedPackages)
+}
 const admin = request({'x-trim-userid':'1000','x-trim-isadmin':'true','x-trim-username':'admin',host:'nas.example'})
 const proxiedAdmin = request({...admin.headers,host:'manager.internal',origin:'https://nas.example','x-hstudio-csrf':'1'})
 
@@ -106,21 +164,6 @@ assert.equal(pythonVersionFromText('Python 3.11'), '3.11.0')
 assert.equal(supportedPythonVersion('Python 3.12.11'), true)
 assert.equal(supportedPythonVersion('Python 3.14.0'), false)
 assert.equal(supportedPythonVersion('Python 2.7.18'), false)
-assert.equal(trustedHermesAgentOrigin('https://github.com/NousResearch/hermes-agent.git'),true)
-assert.equal(trustedHermesAgentOrigin('https://github.com/NousResearch/hermes-agent'),true)
-assert.equal(trustedHermesAgentOrigin('https://github.com/example/hermes-agent.git'),false)
-const hermesRelease={version:'0.20.6',source:'EKKOLearnAI/hermes-studio@v0.7.16',repository:'https://github.com/NousResearch/hermes-agent.git',ref:'v2026.8.27',commit:'5fc308a70719a83cccdbba4c0e39c23f5a8239d5',installMethod:'git',extras:['all'],requirements:{path:'hermes-agent/requirements.txt',sha256:'a'.repeat(64),size:1}}
-assert.equal(validateHermesAgentRelease(hermesRelease).commit,hermesRelease.commit)
-assert.equal(validateHermesAgentRelease(hermesRelease).recommendedForStudioVersion,'0.7.16')
-assert.throws(()=>validateHermesAgentRelease({...hermesRelease,source:'NousResearch/hermes-agent'}),/release_source_invalid/)
-assert.throws(()=>validateHermesAgentRelease({...hermesRelease,source:'EKKOLearnAI/hermes-studio@v0.07.16'}),/release_source_invalid/)
-assert.throws(()=>validateHermesAgentRelease({...hermesRelease,commit:'main'}),/git_pin_invalid/)
-assert.equal(hermesAgentVersionPolicy('Hermes Agent v0.20.6','0.20.6'),'recommended')
-assert.equal(hermesAgentVersionPolicy('Hermes Agent v0.21.0','0.20.6'),'ahead')
-assert.equal(hermesAgentVersionPolicy('Hermes Agent v0.19.0','0.20.6'),'behind')
-assert.equal(hermesAgentStudioCompatibility('Hermes Studio v0.7.16','0.7.16'),'verified')
-assert.equal(hermesAgentStudioCompatibility('Hermes Studio v0.7.17','0.7.16'),'unverified')
-assert.equal(hermesAgentStudioCompatibility('unknown','0.7.16'),'unverified')
 assert.deepEqual(agentReadiness('/tmp/hermes',''),{present:true,installed:true,ready:false})
 assert.deepEqual(agentReadiness('/tmp/hermes','Hermes Agent v0.20.6'),{present:true,installed:true,ready:true})
 assert.deepEqual(agentReadiness('/tmp/pi','pi 0.1.0',{adapterRequired:true,adapterInstalled:false}),{present:true,installed:true,ready:false})
@@ -152,10 +195,21 @@ assert.equal(detectedDesktopAgent.version,'0.21.0')
 assert.equal(detectedDesktopAgent.python.version,'3.12.4')
 assert.equal(detectedDesktopAgent.path,path.join(activeDesktopBin,'hermes'))
 assert.equal(detectedDesktopAgent.browser.status,'Hermes Runtime 已内置')
-const stage=hermesInstallDirectory('stage','11111111-1111-4111-8111-111111111111'),stageEnv=hermesAgentEnvironment(stage)
-assert.equal(stageEnv.HERMES_AGENT_ROOT,stage)
-assert.equal(stageEnv.VIRTUAL_ENV,path.join(stage,'venv'))
-assert.equal(stageEnv.UV_PROJECT_ENVIRONMENT,path.join(stage,'venv'))
+// Healthy inactive runtimes and legacy venvs must never hide a broken selection.
+const inactiveRuntime=path.join(desktopRuntimeRoot,'hermes','0.20.6','linux-x64')
+fs.cpSync(activeDesktopRuntime,inactiveRuntime,{recursive:true})
+fs.writeFileSync(path.join(activeDesktopBin,'python3'),'#!/bin/sh\nexit 1\n')
+assert.equal((await hermesAgent()).ready,false)
+assert.equal((await hermesAgent()).managedRuntimeVersion,'0.21.0')
+fs.unlinkSync(path.join(desktopRuntimeRoot,'active-version.json'))
+assert.equal((await hermesAgent()).installed,false)
+assert.deepEqual(desktopHermesRuntimes(),[])
+fs.writeFileSync(path.join(desktopRuntimeRoot,'active-version.json'),JSON.stringify({runtimeDirectory:activeDesktopRuntime,hermesRuntimeVersion:'0.21.0',runtimeActivationError:'upstream validation failed'}))
+assert.equal((await hermesAgent()).error,'upstream validation failed')
+assert.equal((await hermesAgent()).ready,false)
+assert.equal(JSON.parse(fs.readFileSync(path.join(desktopRuntimeRoot,'active-version.json'),'utf8')).hermesRuntimeVersion,'0.21.0')
+assert.equal(fs.existsSync(inactiveRuntime),true)
+
 assert.equal(runningNpmOperation([{kind:'agent-install',status:'running',target:'codex'}]).target,'codex')
 assert.equal(runningNpmOperation([{kind:'hermes-agent-install',status:'running',target:'hermes-agent'}]).target,'hermes-agent')
 assert.equal(runningNpmOperation([{kind:'studio-update',status:'success',target:'studio'}]),undefined)
@@ -166,8 +220,6 @@ assert.equal(lifecycleConflict('restart',()=>agentInstallOperation),agentInstall
 assert.equal(lifecycleConflict('stop',()=>agentInstallOperation),null)
 assert.equal(runningStudioStartOperation([{kind:'studio-lifecycle',action:'start',status:'running',target:'studio'}]).action,'start')
 assert.equal(runningStudioStartOperation([{kind:'studio-lifecycle',action:'stop',status:'running',target:'studio'}]),undefined)
-assert.equal(cleanupHermesBackup('/unused',()=>{throw new Error('busy')}),true)
-assert.equal(cleanupHermesBackup('/unused',()=>{}),false)
 
 const npmProcRoot=fs.mkdtempSync(path.join(os.tmpdir(),'hstudio-npm-proc-'))
 try{
@@ -296,14 +348,60 @@ const packageFixture=(root,version,{name='hermes-web-ui',bin={"hermes-web-ui":".
 const packageRoot=fs.mkdtempSync(path.join(os.tmpdir(),'hstudio-package-'))
 try{
   packageFixture(packageRoot,'0.7.16')
-  const info=validateStudioPackage(packageRoot,'0.7.16',{readVersion:()=> '0.7.16'})
+  const info=validateStudioPackage(packageRoot,'0.7.16')
   assert.equal(info.version,'0.7.16')
   assert.equal(Object.keys(info.binTargets).length,3)
-  assert.throws(()=>validateStudioPackage(packageRoot,'0.7.17',{readVersion:()=> '0.7.16'}),/studio_package_version_mismatch/)
-  assert.throws(()=>validateStudioPackage(packageRoot,'0.7.16',{readVersion:()=> '0.7.15'}),/studio_package_cli_version_mismatch/)
+  assert.throws(()=>validateStudioPackage(packageRoot,'0.7.17'),/studio_package_version_mismatch/)
   packageFixture(packageRoot,'0.7.16',{bin:{"hermes-web-ui":"./bin/hermes-web-ui.mjs","codex":"./bin/hermes-studio-mcp.mjs"}})
-  assert.throws(()=>validateStudioPackage(packageRoot,'0.7.16',{readVersion:()=> '0.7.16'}),/studio_package_bins_invalid/)
+  assert.throws(()=>validateStudioPackage(packageRoot,'0.7.16'),/studio_package_bins_invalid/)
+  packageFixture(packageRoot,'0.7.16',{bin:{'hermes-web-ui':'../escape.mjs'}})
+  assert.throws(()=>validateStudioPackage(packageRoot,'0.7.16'),/studio_package_entry_invalid/)
+  packageFixture(packageRoot,'0.7.16')
+  fs.unlinkSync(path.join(packageRoot,'bin','hermes-web-ui.mjs'))
+  fs.symlinkSync(path.join(packageRoot,'package.json'),path.join(packageRoot,'bin','hermes-web-ui.mjs'))
+  assert.throws(()=>validateStudioPackage(packageRoot,'0.7.16'),/studio_package_entry_invalid/)
 }finally{fs.rmSync(packageRoot,{recursive:true,force:true})}
+
+// New transactions neither read nor restore obsolete selection state, even
+// when it is invalid JSON, absent, or an unreadable-as-a-file directory.
+for(const content of ['null','{broken',null,'directory']){
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'hstudio-unused-state-'))
+  try{
+    const globalRoot=path.join(root,'global'),stateFile=path.join(root,'state.json'),journalFile=path.join(root,'journal'),staged=path.join(root,'staged')
+    if(content==='directory')fs.mkdirSync(stateFile)
+    else if(content!==null)fs.writeFileSync(stateFile,content)
+    packageFixture(staged,'0.7.16')
+    beginStudioPublish(staged,validateStudioPackage(staged,'0.7.16'),{globalRoot,stateFile,journalFile})
+    const journal=JSON.parse(fs.readFileSync(journalFile,'utf8'))
+    assert.equal(journal.schema,2);assert.equal('stateSnapshot' in journal,false)
+    if(content==='directory')assert.equal(fs.statSync(stateFile).isDirectory(),true)
+    else if(content===null)assert.equal(fs.existsSync(stateFile),false)
+    else assert.equal(fs.readFileSync(stateFile,'utf8'),content)
+    if(content==='directory')fs.rmdirSync(stateFile)
+    fs.writeFileSync(stateFile,'changed outside the updater')
+    assert.equal(recoverStudioPublish({globalRoot,stateFile,journalFile}).action,'rollback')
+    assert.equal(fs.readFileSync(stateFile,'utf8'),'changed outside the updater')
+  }finally{fs.rmSync(root,{recursive:true,force:true})}
+}
+
+// Keep schema-1 recovery, including a second crash/failure during restoration.
+const legacyJournalRoot=fs.mkdtempSync(path.join(os.tmpdir(),'hstudio-legacy-journal-'))
+try{
+  const globalRoot=path.join(legacyJournalRoot,'global'),stateFile=path.join(legacyJournalRoot,'state.json'),journalFile=path.join(legacyJournalRoot,'journal'),staged=path.join(legacyJournalRoot,'staged'),original='{"preferredRuntime":"bundled"}\n'
+  packageFixture(staged,'0.7.16')
+  beginStudioPublish(staged,validateStudioPackage(staged,'0.7.16'),{globalRoot,stateFile,journalFile})
+  const legacy=JSON.parse(fs.readFileSync(journalFile,'utf8'));delete legacy.checksum
+  legacy.schema=1;legacy.phase='state-publish';legacy.stateSnapshot={exists:true,mode:0o600,content:Buffer.from(original).toString('base64')}
+  legacy.checksum=createHash('sha256').update(JSON.stringify(legacy)).digest('hex')
+  fs.writeFileSync(journalFile,JSON.stringify(legacy));fs.mkdirSync(stateFile)
+  assert.throws(()=>recoverStudioPublish({globalRoot,stateFile,journalFile}),/state_restore/)
+  assert.equal(readStudioRecoveryJournal(journalFile).schema,1)
+  fs.rmdirSync(stateFile)
+  assert.equal(recoverStudioPublish({globalRoot,stateFile,journalFile}).action,'rollback')
+  assert.equal(fs.readFileSync(stateFile,'utf8'),original)
+  assert.equal(fs.statSync(stateFile).mode&0o777,0o600)
+  assert.equal(fs.existsSync(journalFile),false)
+}finally{fs.rmSync(legacyJournalRoot,{recursive:true,force:true})}
 
 const publishRoot=fs.mkdtempSync(path.join(os.tmpdir(),'hstudio-publish-'))
 try{
@@ -314,10 +412,10 @@ try{
   fs.writeFileSync(path.join(binDir,'hermes-web-ui'),'old-bin')
   fs.writeFileSync(stateFile,JSON.stringify({preferredRuntime:'bundled',preserved:true})+'\n')
   packageFixture(newPackage,'0.7.16')
-  const info=validateStudioPackage(newPackage,'0.7.16',{readVersion:()=> '0.7.16'})
+  const info=validateStudioPackage(newPackage,'0.7.16')
   const transaction=beginStudioPublish(newPackage,info,{globalRoot,stateFile,validateOwnedBin:()=>true,createLink:(_relative,file)=>fs.writeFileSync(file,'new-bin')})
   assert.equal(fs.existsSync(path.join(oldPackage,'old-marker')),false)
-  assert.equal(JSON.parse(fs.readFileSync(stateFile,'utf8')).preferredRuntime,'user-global')
+  assert.equal(JSON.parse(fs.readFileSync(stateFile,'utf8')).preferredRuntime,'bundled')
   assert.equal(fs.readFileSync(path.join(binDir,'hermes-web-ui'),'utf8'),'new-bin')
   restoreStudioPublish(transaction)
   assert.equal(fs.readFileSync(path.join(oldPackage,'old-marker'),'utf8'),'old')
@@ -333,7 +431,7 @@ try{
   fs.mkdirSync(oldPackage,{recursive:true});fs.writeFileSync(path.join(oldPackage,'old-marker'),'old')
   fs.writeFileSync(stateFile,JSON.stringify({preferredRuntime:'bundled'})+'\n')
   packageFixture(newPackage,'0.7.16')
-  const info=validateStudioPackage(newPackage,'0.7.16',{readVersion:()=> '0.7.16'})
+  const info=validateStudioPackage(newPackage,'0.7.16')
   let links=0
   let publishError
   try{
@@ -350,14 +448,14 @@ try{
   await cleanupStudioGarbage({globalRoot,journalFile:path.join(failedPublishRoot,'studio-update-recovery-required')})
 }finally{fs.rmSync(failedPublishRoot,{recursive:true,force:true})}
 
-for(let faultStep=1;faultStep<=7;faultStep++){
+for(let faultStep=1;faultStep<=6;faultStep++){
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'hstudio-publish-step-'))
   try{
     const globalRoot=path.join(root,'global'),stateFile=path.join(root,'state.json'),oldPackage=path.join(globalRoot,'lib','node_modules','hermes-web-ui'),newPackage=path.join(root,'new-package'),oldBin=path.join(globalRoot,'bin','hermes-web-ui')
     fs.mkdirSync(oldPackage,{recursive:true});fs.mkdirSync(path.dirname(oldBin),{recursive:true})
     fs.writeFileSync(path.join(oldPackage,'old-marker'),'old');fs.writeFileSync(oldBin,'old-bin');fs.writeFileSync(stateFile,JSON.stringify({preferredRuntime:'bundled'})+'\n')
     packageFixture(newPackage,'0.7.16')
-    const info=validateStudioPackage(newPackage,'0.7.16',{readVersion:()=> '0.7.16'})
+    const info=validateStudioPackage(newPackage,'0.7.16')
     let step=0
     assert.throws(()=>beginStudioPublish(newPackage,info,{globalRoot,stateFile,validateOwnedBin:()=>true,createLink:(_relative,file)=>fs.writeFileSync(file,'new-bin'),afterStep:()=>{if(++step===faultStep)throw new Error(`fault_${faultStep}`)}}),new RegExp(`fault_${faultStep}`))
     assert.equal(fs.readFileSync(path.join(oldPackage,'old-marker'),'utf8'),'old')
@@ -367,7 +465,7 @@ for(let faultStep=1;faultStep<=7;faultStep++){
 }
 
 const serverModuleUrl=new URL('../manager/backend/server.mjs',import.meta.url).href
-for(let faultStep=1;faultStep<=7;faultStep++){
+for(let faultStep=1;faultStep<=6;faultStep++){
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'hstudio-publish-crash-'))
   try{
     const globalRoot=path.join(root,'global'),stateFile=path.join(root,'state.json'),journalFile=path.join(root,'studio-update-recovery-required'),oldPackage=path.join(globalRoot,'lib','node_modules','hermes-web-ui'),newPackage=path.join(root,'new-package'),binDir=path.join(globalRoot,'bin'),oldBin=path.join(binDir,'hermes-web-ui')
@@ -415,7 +513,7 @@ try{
   const globalRoot=path.join(committedRecoveryRoot,'global'),stateFile=path.join(committedRecoveryRoot,'state.json'),journalFile=path.join(committedRecoveryRoot,'studio-update-recovery-required'),oldPackage=path.join(globalRoot,'lib','node_modules','hermes-web-ui'),newPackage=path.join(committedRecoveryRoot,'new-package'),binDir=path.join(globalRoot,'bin')
   fs.mkdirSync(oldPackage,{recursive:true});fs.mkdirSync(binDir,{recursive:true});fs.writeFileSync(path.join(oldPackage,'old-marker'),'old');fs.writeFileSync(path.join(binDir,'hermes-web-ui'),'old-bin');fs.writeFileSync(stateFile,JSON.stringify({preferredRuntime:'bundled'})+'\n')
   packageFixture(newPackage,'0.7.16')
-  const info=validateStudioPackage(newPackage,'0.7.16',{readVersion:()=> '0.7.16'})
+  const info=validateStudioPackage(newPackage,'0.7.16')
   beginStudioPublish(newPackage,info,{globalRoot,stateFile,journalFile,operationId:'committed-recovery',beforeVersion:'0.7.15',validateOwnedBin:()=>true,createLink:(_relative,file)=>fs.writeFileSync(file,'new-bin')})
   const committed=JSON.parse(fs.readFileSync(journalFile,'utf8'));delete committed.checksum;committed.phase='committed';committed.status='committed';committed.checksum=createHash('sha256').update(JSON.stringify(committed)).digest('hex');fs.writeFileSync(journalFile,JSON.stringify(committed)+'\n')
   const recovery=recoverStudioPublish({globalRoot,stateFile,journalFile})
@@ -423,7 +521,7 @@ try{
   assert.equal(recovery.cleanupPending,true)
   assert.equal(JSON.parse(fs.readFileSync(path.join(oldPackage,'package.json'),'utf8')).version,'0.7.16')
   assert.equal(fs.readFileSync(path.join(binDir,'hermes-web-ui'),'utf8'),'new-bin')
-  assert.equal(JSON.parse(fs.readFileSync(stateFile,'utf8')).preferredRuntime,'user-global')
+  assert.equal(JSON.parse(fs.readFileSync(stateFile,'utf8')).preferredRuntime,'bundled')
   assert.equal(fs.existsSync(journalFile),false)
   assert.equal(fs.readdirSync(path.dirname(oldPackage)).some(name=>name.includes('.backup.')),true)
   const cleanup=await cleanupStudioGarbage({globalRoot,journalFile})
@@ -450,7 +548,7 @@ try{
   fs.mkdirSync(oldPackage,{recursive:true});fs.mkdirSync(stagingRoot,{recursive:true});fs.writeFileSync(path.join(oldPackage,'old-marker'),'old');fs.writeFileSync(stateFile,JSON.stringify({preferredRuntime:'bundled'})+'\n')
   fs.writeFileSync(path.join(stagingRoot,'partial-package'),'partial')
   packageFixture(newPackage,'0.7.16')
-  const info=validateStudioPackage(newPackage,'0.7.16',{readVersion:()=> '0.7.16'})
+  const info=validateStudioPackage(newPackage,'0.7.16')
   const transaction=beginStudioPublish(newPackage,info,{globalRoot,stateFile,createLink:(_relative,file)=>fs.writeFileSync(file,'new-bin')})
   let stopped=0,terminated=0
   assert.deepEqual(drainStudioUpdateForShutdown({transaction,child:{pid:123,exitCode:null},stagingRoot,stagingBase,stopStudio:()=>{stopped++;assert.equal(fs.existsSync(path.join(oldPackage,'old-marker')),false)},terminate:()=>{terminated++;return true}}),{ok:true,errors:[]})
@@ -500,7 +598,7 @@ const blockedShutdownRoot=fs.mkdtempSync(path.join(os.tmpdir(),'hstudio-shutdown
 try{
   const globalRoot=path.join(blockedShutdownRoot,'global'),stateFile=path.join(blockedShutdownRoot,'state.json'),journalFile=path.join(blockedShutdownRoot,'studio-update-recovery-required'),oldPackage=path.join(globalRoot,'lib','node_modules','hermes-web-ui'),newPackage=path.join(blockedShutdownRoot,'new-package')
   fs.mkdirSync(oldPackage,{recursive:true});fs.writeFileSync(path.join(oldPackage,'old-marker'),'old');fs.writeFileSync(stateFile,JSON.stringify({preferredRuntime:'bundled'})+'\n');packageFixture(newPackage,'0.7.16')
-  const info=validateStudioPackage(newPackage,'0.7.16',{readVersion:()=> '0.7.16'}),transaction=beginStudioPublish(newPackage,info,{globalRoot,stateFile,journalFile,createLink:(_relative,file)=>fs.writeFileSync(file,'new-bin')})
+  const info=validateStudioPackage(newPackage,'0.7.16'),transaction=beginStudioPublish(newPackage,info,{globalRoot,stateFile,journalFile,createLink:(_relative,file)=>fs.writeFileSync(file,'new-bin')})
   const result=drainStudioUpdateForShutdown({transaction,stopStudio:()=>{throw new Error('still_running')}})
   assert.equal(result.ok,false);assert.deepEqual(result.errors,['studio_stop_failed'])
   assert.equal(fs.existsSync(path.join(oldPackage,'old-marker')),false)
@@ -515,7 +613,7 @@ const guardedRollbackRoot=fs.mkdtempSync(path.join(os.tmpdir(),'hstudio-rollback
 try{
   const globalRoot=path.join(guardedRollbackRoot,'global'),stateFile=path.join(guardedRollbackRoot,'state.json'),journalFile=path.join(guardedRollbackRoot,'studio-update-recovery-required'),oldPackage=path.join(globalRoot,'lib','node_modules','hermes-web-ui'),newPackage=path.join(guardedRollbackRoot,'new-package')
   fs.mkdirSync(oldPackage,{recursive:true});fs.writeFileSync(path.join(oldPackage,'old-marker'),'old');fs.writeFileSync(stateFile,JSON.stringify({preferredRuntime:'bundled'})+'\n');packageFixture(newPackage,'0.7.16')
-  const info=validateStudioPackage(newPackage,'0.7.16',{readVersion:()=> '0.7.16'}),transaction=beginStudioPublish(newPackage,info,{globalRoot,stateFile,journalFile,createLink:(_relative,file)=>fs.writeFileSync(file,'new-bin')})
+  const info=validateStudioPackage(newPackage,'0.7.16'),transaction=beginStudioPublish(newPackage,info,{globalRoot,stateFile,journalFile,createLink:(_relative,file)=>fs.writeFileSync(file,'new-bin')})
   const stopFailed=await rollbackStudioAfterStop(transaction,{stopStudio:()=>{throw new Error('stop_failed')},waitStopped:()=>true})
   assert.deepEqual(stopFailed,{restored:false,error:'new_runtime_stop_failed'})
   assert.equal(fs.existsSync(journalFile),true);assert.equal(fs.existsSync(path.join(oldPackage,'old-marker')),false)
@@ -593,17 +691,45 @@ const packageManifest=fs.readFileSync(new URL('../manifest',import.meta.url),'ut
 const frontendScript=frontend.match(/<script>([\s\S]*)<\/script>/)?.[1]
 assert.ok(frontendScript)
 assert.doesNotThrow(()=>new Function(frontendScript))
+assert.doesNotMatch(frontend,/id="detect"|getElementById\('detect'\)|更新\/重装|一键安装/)
+const actionSource=frontend.slice(frontend.indexOf('function agentAction('),frontend.indexOf('function renderAgents('))
+const action=Function(`${actionSource};return agentAction`)()
+assert.equal(action({installed:false}).label,'安装')
+assert.equal(action({installed:true,ready:false}).label,'修复')
+assert.equal(action({ready:true,hermes:true}).label,'管理 Runtime')
+assert.equal(action({hermes:true}).note,'更新由 Studio 管理')
+assert.equal(action({ready:true,update:{reason:'not-checked'}}).note,'未检查更新')
+assert.equal(action({ready:true,update:{reason:'not-checked'}}).hidden,true)
+assert.match(action({ready:true,update:{reason:'check-failed'}}).note,/更新检查失败/)
+assert.equal(action({ready:true,update:{reason:'check-failed'}}).hidden,true)
+assert.equal(action({ready:true,update:{reason:'invalid-version'}}).hidden,true)
+assert.equal(action({ready:true,update:{reason:'current'}}).label,'已是最新')
+assert.equal(action({ready:true,update:{reason:'current'}}).disabled,true)
+assert.equal(action({ready:true,update:{reason:'ahead-of-registry'}}).label,'无可用更新')
+assert.equal(action({ready:true,update:available}).label,'更新至 v2.0.0')
+assert.deepEqual(action({ready:true,update:available}).targets,{version:'2.0.0'})
+assert.deepEqual(action({ready:true,update:piUpdate}).targets,{adapterVersion:'1.1.0'})
+assert.equal(action({ready:true,update:piUpdate}).label,'更新 MCP 至 v1.1.0')
+assert.equal(action({ready:true,operation:{status:'running'}}).disabled,true)
+const inventorySource=frontend.slice(frontend.indexOf('let agentLoadId=0'),frontend.indexOf('async function load(')),pendingInventories=[],renderedInventories=[],inventoryNodes={agentsList:{},agentsDetails:{}}
+const loadInventory=Function('json','api','renderAgents','document',`${inventorySource};return loadAgents`)((url,options)=>new Promise((resolve,reject)=>pendingInventories.push({url,options,resolve,reject})),route=>route,value=>renderedInventories.push(value),{getElementById:id=>inventoryNodes[id]})
+const staleInventory=loadInventory(),freshInventory=loadInventory(true)
+assert.equal(pendingInventories[0].url,'agents');assert.equal(pendingInventories[1].url,'agents/detect');assert.equal(pendingInventories[1].options.method,'POST')
+pendingInventories[1].resolve('fresh');await freshInventory;pendingInventories[0].resolve('stale');await staleInventory
+assert.deepEqual(renderedInventories,['fresh'])
+const failedInventory=loadInventory(true);pendingInventories[2].reject(Error('network'));await failedInventory
+assert.match(inventoryNodes.agentsList.innerHTML,/读取失败/)
 assert.deepEqual(Object.keys(desktopEntries),['HStudio.Manager'])
 assert.equal(desktopEntries['HStudio.Manager'].title,'HStudio')
 assert.equal(desktopEntries['HStudio.Manager'].type,'iframe')
 assert.equal(desktopEntries['HStudio.Manager'].gatewaySocket,'manager.sock')
 assert.match(packageManifest,/^desktop_applaunchname\s*= HStudio\.Manager$/m)
+assert.match(packageManifest,/^install_dep_apps\s*= nodejs_v24\s*$/m)
 assert.match(backend, /leen2175\/fnos-HStudio/)
 assert.match(backend, /route==='\/api\/config'/)
 assert.match(backend, /const operationMatch=/)
 assert.match(frontend, /'x-hstudio-csrf':'1'/)
-const hermesFinalVersionCheck=backend.indexOf("throw new Error('hermes_agent_verification_failed')"),hermesFinalOriginCheck=backend.indexOf("throw new Error('hermes_agent_git_verification_failed')"),hermesBackupCleanup=backend.indexOf('cleanupWarning=cleanupHermesBackup(committedBackup)')
-assert.ok(hermesFinalVersionCheck>=0&&hermesFinalOriginCheck>hermesFinalVersionCheck&&hermesBackupCleanup>hermesFinalOriginCheck)
+assert.doesNotMatch(backend,/function installHermesAgent|hermesEditableRelocationScript/)
 assert.match(frontend, /id="runtimeAction"[^>]*hidden/)
 assert.doesNotMatch(frontend, /id="runtimeReadySummary"/)
 assert.match(frontend, /id="bootstrapWork"/)
@@ -621,7 +747,18 @@ assert.match(frontend, /list=\[hermes,\.\.\.coding\]/)
 assert.match(frontend, /button\.dataset\.agent==='hermes-agent'\?manageHermesAgent\(\):installAgent/)
 assert.match(frontend, /button\.dataset\.agent==='hermes-agent'\?manageHermesAgent\(\):removeAgent/)
 assert.doesNotMatch(frontend, /installAgent\('hermes-agent'/)
-assert.match(frontend, /统一管理 Hermes、Claude、Codex、Pi 和 Grok/)
+assert.doesNotMatch(frontend, /HSTUDIO \/ CONTROL CENTER|Hermes Studio Web UI 与 Runtime 管理|统一管理 Hermes|管理安装源与界面偏好|安装、更新与进程控制/)
+assert.doesNotMatch(frontend,/Runtime 下载源在 Studio 中设置|预构建 Runtime 的下载源不受影响/)
+for(const kind of ['npm','python']){
+  assert.match(frontend,new RegExp(`id="${kind}Registry"[^>]*aria-describedby="registryHint"`))
+  assert.ok(frontend.includes(`id="${kind}RegistryMessage" class="inline-message" aria-live="polite"`))
+}
+assert.equal(frontend.split('更换镜像后请重启 Studio。').length-1,1)
+assert.match(frontend,/<small id="registryHint" class="setting-hint">更换镜像后请重启 Studio。<\/small>/)
+assert.match(frontend,/下载后在 fnOS 手动安装/)
+assert.match(frontend,/配置会保留/)
+assert.match(frontend,/刷新状态并检查 Agent 更新/)
+assert.match(frontend,/\.inline-message:empty,\.agent-update-note:empty/)
 assert.match(frontend, /watchAgentInstall\(running\.name,running\.operation\.id,true\)/)
 assert.match(frontend, /operation_not_found/)
 assert.match(frontend, /await load\(true\)/)
@@ -636,13 +773,6 @@ assert.match(frontend, /data-remove-agent/)
 assert.match(frontend, /async function removeAgent/)
 assert.match(backend, /active-version\.json/)
 assert.match(backend, /hermesRuntimeVersionProbe/)
-assert.match(backend, /\['update','--yes','--keep-stash'\]/)
-assert.match(backend, /'--require-hashes','--no-deps','--requirement',release\.requirementsPath/)
-assert.match(backend, /'--no-build-isolation','--no-deps','--editable','\.'/)
-assert.match(backend, /\['fetch','--depth=1','origin',release\.ref\]/)
-assert.match(backend, /fetched!==release\.commit/)
-assert.match(backend, /durableRename\(stageRoot,hermesAgentRoot\)/)
-assert.match(backend, /hermesEditableRelocationScript/)
 assert.doesNotMatch(frontend, /id="hermesAgentUpdateMethod"/)
 assert.doesNotMatch(frontend, /id="hermesAgentRecommendedVersion"/)
 assert.doesNotMatch(frontend, /id="hermesAgentBrowser"/)
@@ -664,8 +794,10 @@ assert.doesNotMatch(frontend, /Studio Runtime 来源/)
 assert.doesNotMatch(frontend, /id="runtimeSource"/)
 assert.doesNotMatch(frontend, /id="runtimePath"/)
 assert.doesNotMatch(frontend, /id="runtimeNote"/)
-assert.match(frontend, /<h3>Python<\/h3><div id="pythonVersion"/)
-assert.match(frontend, /fnOS python312/)
+assert.match(frontend, /<h3>Runtime Python<\/h3><div id="pythonVersion"/)
+assert.match(frontend, /<h3>Runtime Python<\/h3>/)
+assert.doesNotMatch(frontend, /fnOS python312/)
+assert.doesNotMatch(backend, /function pythonBin\(/)
 assert.match(backend, /pythonVersion:python\.version,pythonPath:python\.path/)
 assert.match(frontend, /id="pythonRegistry"/)
 assert.match(frontend, /id="savePythonRegistry"/)
@@ -682,6 +814,13 @@ assert.match(frontend, /maybeAutoOpenHermes\(v\)/)
 assert.match(frontend, /document\.getElementById\('openHermes'\)\.onclick=openHermes/)
 
 const autoOpenStart=frontend.indexOf('let autoOpenAttempted=false'),autoOpenEnd=frontend.indexOf('function hermesUrl()',autoOpenStart)
+const manageSource=frontend.slice(frontend.indexOf('function manageHermesAgent()'),frontend.indexOf('function agentAction('))
+for(const base of ['http://192.0.2.10:8648/','https://hstudio.nas.example/','https://studio.example/custom/?mode=web#old']){
+  const opened=[];let marked=false
+  Function('hermesUrl','markAutoOpenAttempted','window',`${manageSource};manageHermesAgent()`)(()=>base,()=>{marked=true},{open:(...args)=>opened.push(args)})
+  const expected=new URL(base);expected.hash='/studio/agents'
+  assert.deepEqual(opened,[[expected.href,'_blank','noopener,noreferrer']]);assert.equal(marked,true)
+}
 assert.ok(autoOpenStart>=0&&autoOpenEnd>autoOpenStart)
 const autoOpenSource=frontend.slice(autoOpenStart,autoOpenEnd),storage=values=>({getItem:key=>values[key]??null,setItem:(key,value)=>{values[key]=value}})
 const autoOpenLocalValues={},autoOpenSessionValues={},autoOpenCalls=[],autoOpenRuntime=Function('localStorage','sessionStorage','window','hermesUrl',`${autoOpenSource};return {setAutoOpenHermes,maybeAutoOpenHermes}`)(storage(autoOpenLocalValues),storage(autoOpenSessionValues),{open:(...args)=>autoOpenCalls.push(args)},()=> 'http://nas.example:8648/')
@@ -702,5 +841,19 @@ const renderFpkStart=frontend.indexOf('function renderFpkUpdate('),renderFpkEnd=
 assert.ok(renderFpkStart>=0&&renderFpkEnd>renderFpkStart)
 assert.doesNotMatch(renderFpkSource,/JSON\.stringify/)
 
+// Old selection state must not affect update preflight; latest comes only
+// from official npm, even when a mirror is configured for installation.
+fs.writeFileSync(path.join(managerTestData,'manager','state.json'),JSON.stringify({preferredRuntime:'bundled'}))
+fs.mkdirSync(path.join(managerTestData,'hermes-home'),{recursive:true})
+const canonicalCli=path.join(managerTestData,'studio.mjs'),mockNpm=path.join(managerTestData,'npm')
+fs.writeFileSync(canonicalCli,'console.log("0.7.18")')
+fs.writeFileSync(path.join(managerTestLifecycle,'cmd','main'),'#!/bin/sh\n[ "$#" = 1 ] || exit 2\necho "user-global:$DATA_DIR/studio.mjs"\n')
+fs.writeFileSync(mockNpm,'#!/bin/sh\ncase "$*" in *--registry=https://registry.npmjs.org/*) echo "\\"0.7.17\\"";; *) exit 2;; esac\n',{mode:0o755})
+process.env.NODE_BIN=process.execPath;process.env.NPM_BIN=mockNpm
+setNpmRegistry('taobao')
+const blockedDowngrade=await updateStudio()
+assert.equal(blockedDowngrade.error,'downgrade_blocked')
+assert.equal(blockedDowngrade.update.currentVersion,'0.7.18')
+assert.equal(blockedDowngrade.update.latestVersion,'0.7.17')
 fs.rmSync(managerTestData,{recursive:true,force:true})
 console.log('PASS Manager authorization, redaction, update guard and ready-state UI')

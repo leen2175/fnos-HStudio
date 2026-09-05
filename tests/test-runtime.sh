@@ -91,22 +91,15 @@ HERMES_TEST_BUNDLED_PROBES="$T/bundled-probes" HERMES_TEST_TIMEOUT_BUNDLED=1 \
   select_runtime auto
 [ "$RUNTIME_SOURCE" = user-global ]
 test ! -s "$T/bundled-probes"
-set_preferred_runtime bundled; select_runtime; [ "$RUNTIME_SOURCE" = bundled ]
-
-# The previous pointer is an actual rollback path. A current Runtime whose CLI
-# health probe fails must fall back to previous rather than making bundled mode
-# unavailable.
-cp -R "$DATA_DIR/runtime/studio/1.0.0" "$DATA_DIR/runtime/studio/0.9.0"
-ln -s 0.9.0 "$DATA_DIR/runtime/studio/previous"
-printf '%s\n' '{"name":"hermes-web-ui","version":"0.0.0"}' > \
-  "$DATA_DIR/runtime/studio/1.0.0/package.json"
-select_runtime bundled
-[ "$RUNTIME_SOURCE" = bundled ]
-[ "$RUNTIME_ENTRY" = "$DATA_DIR/runtime/studio/previous/bin/hermes-web-ui" ]
-
-# A dangling current pointer follows the same rollback path.
-rm -f "$DATA_DIR/runtime/studio/current"
-ln -s missing "$DATA_DIR/runtime/studio/current"
-select_runtime bundled
-[ "$RUNTIME_ENTRY" = "$DATA_DIR/runtime/studio/previous/bin/hermes-web-ui" ]
+# Old saved preferences and even healthy archived copies are not candidates.
+mkdir -p "$DATA_DIR/manager"
+printf '%s\n' '{"preferredRuntime":"bundled"}' > "$DATA_DIR/manager/state.json"
+select_runtime
+[ "$RUNTIME_SOURCE" = user-global ]
+rm -f "$runtime_user_bin"
+if select_runtime; then
+  echo 'unexpected fallback to a locally managed version' >&2
+  exit 1
+fi
+test -d "$DATA_DIR/runtime/studio/1.0.0"
 echo PASS

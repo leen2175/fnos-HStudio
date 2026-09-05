@@ -40,7 +40,7 @@ jobs:
         with:
           node-version: '24'
 
-      - name: Read and validate the Runtime lock
+      - name: Validate official npm channel and package version
         id: runtime
         shell: bash
         run: |
@@ -52,24 +52,10 @@ jobs:
 
           manifest = json.loads(pathlib.Path("config/runtime-manifest.json").read_text(encoding="utf-8"))
           studio = manifest["studio"]
-          version = str(studio["version"])
-          archive = str(studio["archive"])
-          commit = str(studio["upstreamCommit"]).lower()
-          sha256 = str(studio["sha256"]).lower()
-          source_url = str(studio["sourceUrl"])
-          expected_url = (
-              "https://github.com/EKKOLearnAI/hermes-studio/releases/download/"
-              f"v{version}/hermes-web-ui-{version}.tar.gz"
-          )
-          expected_archive = f"hermes-studio-runtime-{version}-linux-x64.tar.gz"
-
+          assert studio["package"] == "hermes-web-ui"
+          assert studio["distTag"] == "latest"
+          assert studio["registry"] == "https://registry.npmjs.org/"
           assert studio["upstreamRepository"] == "https://github.com/EKKOLearnAI/hermes-studio"
-          assert studio["upstreamTag"] == f"v{version}"
-          assert source_url == expected_url
-          assert archive == expected_archive
-          assert re.fullmatch(r"[0-9a-f]{40}", commit)
-          assert re.fullmatch(r"[0-9a-f]{64}", sha256)
-          assert int(studio["size"]) > 0
 
           package_version = next(
               line.split("=", 1)[1].strip().strip('"')

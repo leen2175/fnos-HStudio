@@ -12,7 +12,6 @@ export TRIM_APPDEST TRIM_PKGHOME TRIM_PKGVAR DATA_DIR
 . "$ROOT/lib/environment.sh"
 . "$ROOT/lib/runtime.sh"
 . "$ROOT/lib/process.sh"
-. "$ROOT/lib/migration.sh"
 . "$ROOT/lib/skills.sh"
 init_environment
 HERMES_PORT="${HERMES_PORT:-${TRIM_SERVICE_PORT:-8648}}"
@@ -296,51 +295,10 @@ start_runtime_candidate() {
     stop_process_tree 2>/dev/null || true
     return 1
 }
-activate_previous_after_fallback() {
-    local entry="$1" previous target root p
-    previous="${runtime_bundled_root}/previous"
-    [ -L "$previous" ] || return 1
-    target="$(readlink "$previous" 2>/dev/null || true)"
-    case "$target" in ""|.|..|*/*|*\\*) return 1 ;; esac
-    root="$(runtime_package_root "$entry" 2>/dev/null || true)"
-    [ "$root" = "${runtime_bundled_root}/${target}" ] || return 1
-    p="$(read_process_pid 2>/dev/null || true)"
-    [ -n "$p" ] && running_studio_matches_entry "$p" "$entry" || return 1
-    activate_bundled_runtime "$target"
-}
-promote_selected_previous() {
-    local source="$1" entry="$2" previous
-    previous="$(previous_bundled_entry 2>/dev/null || true)"
-    if [ "$source" = bundled ] && [ -n "$previous" ] && [ "$entry" = "$previous" ]; then
-        activate_previous_after_fallback "$entry" \
-            || log_msg 'Previous bundled Runtime started successfully but could not be promoted to current'
-    fi
-}
-try_bundled_fallbacks() {
-    local primary="$1" current previous
-    current="$(bundled_entry 2>/dev/null || true)"
-    if [ -n "$current" ] && [ "$current" != "$primary" ] \
-        && health_check_runtime "$current"; then
-        log_msg 'Trying the current bundled Hermes Studio Runtime'
-        start_runtime_candidate bundled "$current" && return 0
-    fi
-    previous="$(previous_bundled_entry 2>/dev/null || true)"
-    if [ -n "$previous" ] && [ "$previous" != "$primary" ] \
-        && [ "$previous" != "$current" ] && health_check_runtime "$previous"; then
-        log_msg 'Current Hermes Studio Runtime failed; trying the previous bundled Runtime'
-        if start_runtime_candidate bundled "$previous"; then
-            activate_previous_after_fallback "$previous" \
-                || log_msg 'Previous bundled Runtime is healthy but current/previous pointers could not be rolled back'
-            return 0
-        fi
-    fi
-    return 1
-}
 start_studio() {
     local allow_manager_only="${1:-0}" source="" entry="" p="" runtime_available=0
-    migrate_legacy_runtime 2>/dev/null || true
     [ -n "${NODE_BIN:-}" ] || { fail 'nodejs_v24 runtime not found'; return 1; }
-    if select_runtime "$(preferred_runtime)"; then
+    if select_runtime; then
         runtime_available=1
         source="$RUNTIME_SOURCE"
         entry="$RUNTIME_ENTRY"
@@ -352,7 +310,6 @@ start_studio() {
         if [ "$runtime_available" -eq 1 ] \
             && running_studio_matches_entry "$p" "$entry" \
             && studio_http_healthy; then
-            promote_selected_previous "$source" "$entry"
             log_msg 'Hermes Studio already matches the selected Runtime and is healthy; start request ignored'
             return 0
         fi
@@ -371,13 +328,6 @@ start_studio() {
         return 1
     fi
     if start_runtime_candidate "$source" "$entry"; then
-        promote_selected_previous "$source" "$entry"
-        return 0
-    fi
-    if [ "$source" = user-global ] && try_bundled_fallbacks "$entry"; then
-        return 0
-    fi
-    if [ "$source" = bundled ] && try_bundled_fallbacks "$entry"; then
         return 0
     fi
     fail 'Hermes Studio failed its verified startup health check'
@@ -396,8 +346,7 @@ running_studio_matches_entry() {
 }
 reconcile_studio() {
     local p
-    migrate_legacy_runtime 2>/dev/null || true
-    if ! select_runtime "$(preferred_runtime)"; then
+    if ! select_runtime; then
         fail 'No healthy Hermes runtime is available'
         return 1
     fi
@@ -411,7 +360,7 @@ reconcile_studio() {
         stop_studio || return 1
     fi
     if [ -n "$p" ] && process_matches "$p"; then
-        log_msg 'Selected bundled Runtime changed; restarting Hermes Studio'
+        log_msg 'Studio installation changed; restarting Hermes Studio'
         stop_studio || return 1
     fi
     start_studio 0
@@ -480,7 +429,7 @@ case "${1:-status}" in
   studio-restart) prepare_start && update_recovery_allows_studio && stop_studio && start_studio 0 ;;
   bootstrap-complete) prepare_start && start_manager && update_recovery_allows_studio && reconcile_studio ;;
   status) status && exit 0 || exit 3 ;;
-  runtime) select_runtime "${2:-}" && printf '%s:%s\n' "$RUNTIME_SOURCE" "$RUNTIME_ENTRY" ;;
-  runtime-version) select_runtime "${2:-}" && runtime_version "$RUNTIME_ENTRY" "$NODE_BIN" ;;
-  *) echo "usage: $0 {start|stop|restart|studio-start|studio-stop|studio-restart|status|runtime|runtime-version [auto|user-global|bundled]}" >&2; exit 1 ;;
+  runtime) select_runtime && printf '%s:%s\n' "$RUNTIME_SOURCE" "$RUNTIME_ENTRY" ;;
+  runtime-version) select_runtime && runtime_version "$RUNTIME_ENTRY" "$NODE_BIN" ;;
+  *) echo "usage: $0 {start|stop|restart|studio-start|studio-stop|studio-restart|status|runtime|runtime-version}" >&2; exit 1 ;;
 esac

@@ -45,6 +45,13 @@ with tarfile.open(fileobj=io.BytesIO(payload), mode="r:gz") as archive:
     forbidden = ("darwin", "windows", ".exe", ".cmd", ".ps1")
     assert not [name for name in members if any(token in name.lower() for token in forbidden)]
     assert "skills/trim-cli/SKILL.md" in members
+    for relative in BUILDER.TRIM_CLI_FILES:
+        name = f"skills/trim-cli/{relative}"
+        assert archive.extractfile(name).read() == (BUILDER.TRIM_CLI_SKILL / relative).read_bytes(), name
+    for entry in ("media", "network", "photos"):
+        assert f"entries/trim-{entry}.md" in bundled_manifest["entries"]
+        assert f"skills/trim-cli/reference/{entry}.md" in members
+    assert "skills/trim-cli/reference/power.md" in members
     assert any(name.startswith("skills/trim-cli/entries/") for name in members)
     assert any(name.startswith("skills/trim-cli/reference/") for name in members)
     assert not any(name.startswith("runtime/") for name in members)

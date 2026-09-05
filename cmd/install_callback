@@ -1,6 +1,6 @@
 #!/bin/bash
-# Install callback: bootstrap only the bundled fallback. User npm global data is
-# deliberately never removed, so App updates and credentials survive FPK upgrades.
+# Install the official npm package only when absent or unhealthy.
+# Healthy installations and all user data survive FPK upgrades.
 set +u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_DIR="${TRIM_APPDEST:-$ROOT}"
@@ -10,31 +10,10 @@ DATA_DIR="${TRIM_PKGHOME}/data"
 export TRIM_APPDEST TRIM_PKGHOME DATA_DIR
 . "$ROOT/cmd/lib/environment.sh"
 . "$ROOT/cmd/lib/runtime.sh"
-. "$ROOT/cmd/lib/migration.sh"
-. "$ROOT/cmd/lib/download.sh"
 init_environment
 LOG_FILE="${TRIM_PKGVAR:-${APP_DIR}/var}/info.log"; mkdir -p "$(dirname "$LOG_FILE")"
 log_msg() { printf '%s [install] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" | tee -a "$LOG_FILE" >/dev/null; }
 BOOTSTRAP_STATE_FILE="${DATA_DIR}/manager/runtime-bootstrap.json"
-BOOTSTRAP_NPM_STAGE_PATH=""
-BOOTSTRAP_NPM_ARCHIVE_PATH=""
-
-cleanup_bootstrap_transients() {
-    local path parent name
-    cleanup_runtime_install_transients
-    for path in "${BOOTSTRAP_NPM_STAGE_PATH:-}" "${BOOTSTRAP_NPM_ARCHIVE_PATH:-}"; do
-        [ -n "$path" ] || continue
-        parent="$(dirname -- "$path")"
-        name="$(basename -- "$path")"
-        [ "$parent" = "$runtime_bundled_root" ] || continue
-        case "$name" in
-            .npm-stage.*."$$".*) rm -rf -- "$path" ;;
-            .npm-runtime.*."$$".*.tar.gz) rm -f -- "$path" ;;
-        esac
-    done
-    BOOTSTRAP_NPM_STAGE_PATH=""
-    BOOTSTRAP_NPM_ARCHIVE_PATH=""
-}
 # Invoked indirectly by the EXIT trap below.
 # shellcheck disable=SC2317
 bootstrap_terminal() {
@@ -68,7 +47,6 @@ fail() {
 bootstrap_exit() {
     local exit_code="$1"
     trap - EXIT
-    cleanup_bootstrap_transients
     bootstrap_terminal "$exit_code"
 }
 trap 'bootstrap_exit "$?"' EXIT
@@ -172,138 +150,25 @@ if [ "${HSTUDIO_RUNTIME_BOOTSTRAP:-0}" != "1" ]; then
     exit 0
 fi
 
-CONFIG_DIR=""
-for candidate in "${TRIM_PKGETC:-}/bootstrap" "$ROOT/config/bootstrap" "$APP_DIR/config/bootstrap" "$APP_DIR/app/config/bootstrap" "$(dirname "$APP_DIR")/config/bootstrap" "$ROOT/../config/bootstrap"; do
-    if [ -f "$candidate/hermes-studio-version.env" ]; then CONFIG_DIR="$(dirname "$candidate")"; break; fi
-done
-VERSION_ENV="${CONFIG_DIR:+$CONFIG_DIR/bootstrap/}hermes-studio-version.env"
-if [ -z "$CONFIG_DIR" ] || [ ! -f "$VERSION_ENV" ]; then
-    fail 'missing Hermes version metadata'
-fi
-RUNTIME_MANIFEST=""
-for candidate in "$CONFIG_DIR/runtime-manifest.json" "${TRIM_PKGETC:-}/runtime-manifest.json" "$ROOT/config/runtime-manifest.json" "$ROOT/etc/runtime-manifest.json" "$APP_DIR/config/runtime-manifest.json" "$APP_DIR/etc/runtime-manifest.json" "$APP_DIR/app/config/runtime-manifest.json" "$APP_DIR/../etc/runtime-manifest.json" "$ROOT/../config/runtime-manifest.json"; do
-    if [ -f "$candidate" ]; then RUNTIME_MANIFEST="$candidate"; break; fi
-done
-# shellcheck source=/dev/null
-. "$VERSION_ENV"
-[ -n "${HERMES_STUDIO_VERSION:-}" ] || fail 'invalid Hermes version metadata'
-NODE_VERSION="${NODE_BIN:+$($NODE_BIN --version 2>/dev/null || true)}"
-NODE_MAJOR="$(printf '%s\n' "$NODE_VERSION" | sed -nE 's/^v([0-9]+).*$/\1/p')"
-[ "${NODE_MAJOR:-0}" = 24 ] || fail "fnOS nodejs_v24 is required (selected ${NODE_BIN:-<missing>} reports ${NODE_VERSION:-unknown})"
-[ -n "$RUNTIME_MANIFEST" ] && [ -f "$RUNTIME_MANIFEST" ] && [ -r "$RUNTIME_MANIFEST" ] \
-    || fail 'missing or unreadable Runtime manifest'
-manifest_values="$($NODE_BIN -e '
-const fs=require("node:fs")
-try {
-  const value=JSON.parse(fs.readFileSync(process.argv[2],"utf8"))
-  const studio=value&&value.studio
-  const semver=/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$/
-  if(!studio||!semver.test(studio.version)||!/^[0-9a-f]{64}$/i.test(studio.sha256)||!Number.isSafeInteger(studio.size)||studio.size<1)process.exit(2)
-  process.stdout.write(`${studio.version}\n${studio.sha256.toLowerCase()}\n${studio.size}\n`)
-} catch { process.exit(2) }
-' hstudio-runtime-manifest "$RUNTIME_MANIFEST" 2>/dev/null)" \
-    || fail 'invalid Runtime manifest: studio.version, sha256 and size must be locked'
-mapfile -t manifest_fields <<< "$manifest_values"
-[ "${#manifest_fields[@]}" -eq 3 ] || fail 'invalid Runtime manifest fields'
-RUNTIME_MANIFEST_VERSION="${manifest_fields[0]}"
-RUNTIME_MANIFEST_SHA256="${manifest_fields[1]}"
-RUNTIME_MANIFEST_SIZE="${manifest_fields[2]}"
-[ "$RUNTIME_MANIFEST_VERSION" = "$HERMES_STUDIO_VERSION" ] \
-    || fail 'Hermes version metadata does not match Runtime manifest'
-
-ensure_bundled_runtime() {
-    local version target current current_version archive_bytes
-    local npm_stage npm_package npm_archive npm_hash expected
-    local -a local_urls
-    version="${HERMES_STUDIO_VERSION}"
-    target="${DATA_DIR}/runtime/studio/${version}"
-    current="$(current_bundled_entry 2>/dev/null || true)"
-    if [ -n "$current" ] && health_check_runtime "$current"; then
-        current_version="$(runtime_package_version "$(runtime_package_root "$current")" 2>/dev/null || true)"
-        if [ "$current_version" = "$version" ]; then
-            log_msg "bundled runtime ${version} already active at its verified current target"
-            return 0
-        fi
-    fi
-    if health_check_runtime "$target/bin/hermes-web-ui"; then
-        if activate_bundled_runtime "$version"; then
-            log_msg "bundled runtime ${version} already present and active"; return 0
-        fi
-        log_msg "bundled runtime ${version} exists but current/previous pointer repair failed"
-        return 1
-    fi
-    mkdir -p "${runtime_bundled_root}"
-    if [ ! -e "$target/bin/hermes-web-ui" ] && [ ! -e "$target/bin/hermes-web-ui.mjs" ]; then
-        mapfile -t local_urls < <(sed -n '/"urls"[[:space:]]*:/,/]/p' "$RUNTIME_MANIFEST" 2>/dev/null | sed -nE 's/.*"(https?:[^" ]+)".*/\1/p')
-        expected="$RUNTIME_MANIFEST_SHA256"
-        bootstrap_phase archive-download "Downloading verified GitHub Runtime archive"
-        if [ "${#local_urls[@]}" -gt 0 ] && download_with_resume "$DATA_DIR/cache/downloads/${version}.tar.gz" "$expected" "$RUNTIME_MANIFEST_SIZE" "${local_urls[@]}"; then
-            bootstrap_phase archive-install "Verifying and installing Runtime archive"
-            archive_bytes="$(stat -c '%s' "$DATA_DIR/cache/downloads/${version}.tar.gz" 2>/dev/null || true)"
-            if [ "$archive_bytes" = "$RUNTIME_MANIFEST_SIZE" ]; then
-                install_runtime_archive "$DATA_DIR/cache/downloads/${version}.tar.gz" "$version" "$expected" && return 0
-            else
-                rm -f -- "$DATA_DIR/cache/downloads/${version}.tar.gz"
-                log_msg "downloaded Runtime size mismatch expected=${RUNTIME_MANIFEST_SIZE} actual=${archive_bytes:-unknown}"
-            fi
-        fi
-    fi
-    if [ -x "${NPM_BIN:-}" ]; then
-        bootstrap_phase npm-install "GitHub archive unavailable; installing from npm registry"
-        npm_stage="${runtime_bundled_root}/.npm-stage.${version}.$$.${RANDOM}"
-        npm_archive="${runtime_bundled_root}/.npm-runtime.${version}.$$.${RANDOM}.tar.gz"
-        BOOTSTRAP_NPM_STAGE_PATH="$npm_stage"
-        BOOTSTRAP_NPM_ARCHIVE_PATH="$npm_archive"
-        npm_package="${npm_stage}/lib/node_modules/hermes-web-ui"
-        log_msg "archive unavailable; trying isolated npm fallback hermes-web-ui@${version}"
-        (umask 077; mkdir -p "$npm_stage") || return 1
-        export HOME="$DATA_DIR" \
-            npm_config_prefix="$npm_stage" NPM_CONFIG_PREFIX="$npm_stage" \
-            npm_config_userconfig="$npm_stage/.npmrc" NPM_CONFIG_USERCONFIG="$npm_stage/.npmrc" \
-            npm_config_fetch_retries=3 npm_config_fetch_retry_mintimeout=2000 npm_config_fetch_retry_maxtimeout=15000
-        if run_command_bounded "$NODE_BIN" 900000 "$NPM_BIN" install --global --prefix "$npm_stage" \
-            --no-audit --no-fund "hermes-web-ui@${version}" >> "$LOG_FILE" 2>&1; then
-            if [ -d "$npm_package" ] \
-                && tar -czf "$npm_archive" -C "${npm_stage}/lib/node_modules" hermes-web-ui >> "$LOG_FILE" 2>&1; then
-                if command -v sha256sum >/dev/null 2>&1; then
-                    npm_hash="$(sha256sum "$npm_archive" | awk '{print $1}')"
-                else
-                    npm_hash="$(shasum -a 256 "$npm_archive" | awk '{print $1}')"
-                fi
-                if [ -n "$npm_hash" ] && install_runtime_archive "$npm_archive" "$version" "$npm_hash"; then
-                    rm -rf -- "$npm_stage"
-                    rm -f -- "$npm_archive"
-                    BOOTSTRAP_NPM_STAGE_PATH=""
-                    BOOTSTRAP_NPM_ARCHIVE_PATH=""
-                    log_msg "isolated npm runtime ${version} verified and published as bundled Runtime"
-                    return 0
-                fi
-                log_msg "isolated npm Runtime rejected for hermes-web-ui@${version} reason=${RUNTIME_ARCHIVE_ERROR:-health}"
-            fi
-        fi
-        rm -rf -- "$npm_stage"
-        rm -f -- "$npm_archive"
-        BOOTSTRAP_NPM_STAGE_PATH=""
-        BOOTSTRAP_NPM_ARCHIVE_PATH=""
-        log_msg "isolated npm fallback failed for hermes-web-ui@${version}"
-    fi
-    if [ "${HSTUDIO_RUNTIME_BOOTSTRAP:-0}" = "1" ]; then
-        fail 'GitHub Runtime archive and npm registry fallback both failed; inspect Runtime bootstrap log'
-    fi
-    # App Center installation stays independent from network availability.
-    # Manager retries this bootstrap after installation instead of making App
-    # Center reject the whole package.
-    log_msg 'bundled runtime not available; deferring download to Manager'
-    return 0
-}
-
+[ -x "${NODE_BIN:-}" ] && [ -x "${NPM_BIN:-}" ] || fail 'fnOS nodejs_v24 and npm are required'
 mkdir -p "$DATA_DIR" "$NPM_GLOBAL" "$HERMES_WEB_UI_HOME"
-migrate_legacy_runtime || true
-# Manager bootstrap never changes or replaces a healthy user-global Runtime.
 if health_check_runtime "$runtime_user_bin"; then
-    log_msg "healthy user Runtime ${runtime_user_bin} preserved as preferred auto Runtime"
+    log_msg "healthy official npm installation preserved at ${NPM_GLOBAL}"
 else
-    ensure_bundled_runtime
+    bootstrap_phase npm-install "Installing official hermes-web-ui@latest"
+    # npm resolves the official package's latest tag. Mirrors only transport
+    # that exact version; never use a locally pinned archive or another channel.
+    version="$(run_command_bounded "$NODE_BIN" 30000 "$NPM_BIN" view hermes-web-ui@latest version --registry=https://registry.npmjs.org/ 2>> "$LOG_FILE")" \
+        || fail 'Could not resolve the official Hermes Studio npm version'
+    [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]] \
+        || fail 'Invalid official Hermes Studio npm version'
+    run_command_bounded "$NODE_BIN" 900000 "$NPM_BIN" install --global --prefix "$NPM_GLOBAL" \
+        --registry="$NPM_REGISTRY" --no-audit --no-fund "hermes-web-ui@$version" >> "$LOG_FILE" 2>&1 \
+        || fail 'Official npm installation failed; choose an available npm mirror and retry'
+    health_check_runtime "$runtime_user_bin" || fail 'Installed Hermes Studio failed its health check'
+    [ "$(runtime_version "$runtime_user_bin" "$NODE_BIN")" = "$version" ] \
+        || fail 'Installed Hermes Studio version differs from the official npm version'
+    log_msg "official npm Studio $version installed at ${NPM_GLOBAL}"
 fi
 # Keep npm prefix explicit for Hermes' own update/upgrade commands.
 cat > "$DATA_DIR/.npmrc" <<EOF

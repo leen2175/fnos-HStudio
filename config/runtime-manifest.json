@@ -1,60 +1,29 @@
 {
   "schema": 1,
   "studio": {
-    "version": "0.7.16",
+    "package": "hermes-web-ui",
+    "distTag": "latest",
+    "registry": "https://registry.npmjs.org/",
     "upstreamRepository": "https://github.com/EKKOLearnAI/hermes-studio",
-    "upstreamTag": "v0.7.16",
-    "upstreamCommit": "292a675d6cc82b50baae51d1268980186a985929",
-    "sourceType": "official-release",
-    "sourceUrl": "https://github.com/EKKOLearnAI/hermes-studio/releases/download/v0.7.16/hermes-web-ui-0.7.16.tar.gz",
-    "releaseMetadataUrl": "https://github.com/EKKOLearnAI/hermes-studio/releases/download/v0.7.16/hermes-web-ui-0.7.16.json",
-    "platform": "linux-x64",
     "nodeMajor": 24,
-    "archive": "hermes-studio-runtime-0.7.16-linux-x64.tar.gz",
-    "sha256": "457d5745c58d6c5991b729c403bc890d564c48de62703a435a376a1e13f9a797",
-    "size": 129814801,
-    "builtAt": "2026-09-02T01:00:23Z",
+    "licenseReferenceTag": "v0.7.16",
     "license": "BSL-1.1",
     "licenseFile": "licenses/Hermes-Studio-LICENSE.txt",
     "licenseSha256": "34817b1cbee88f09a2307e761b32aa237392db74385835770cd0032e23e33a69",
-    "licenseStatus": "license-review-required",
-    "urls": [
-      "https://github.com/EKKOLearnAI/hermes-studio/releases/download/v0.7.16/hermes-web-ui-0.7.16.tar.gz"
-    ]
-  },
-  "hermesAgent": {
-    "version": "0.20.6",
-    "source": "EKKOLearnAI/hermes-studio@v0.7.16",
-    "repository": "https://github.com/NousResearch/hermes-agent.git",
-    "ref": "v2026.8.27",
-    "commit": "5fc308a70719a83cccdbba4c0e39c23f5a8239d5",
-    "installMethod": "git",
-    "extras": [
-      "all",
-      "messaging",
-      "slack",
-      "matrix",
-      "wecom",
-      "dingtalk",
-      "feishu"
-    ],
-    "requirements": {
-      "path": "hermes-agent/requirements.txt",
-      "sha256": "44457712fa75f0b424090333030f14035f18a4d67a3d5b311a31d1c26baf563d",
-      "size": 123970
-    }
+    "licenseStatus": "license-review-required"
   },
   "trimCli": {
     "version": "0.1.0",
+    "bundleRevision": "v2",
     "distribution": "fnOS-official-public-tool",
     "binaries": {
       "linux-x64": {
         "sourcePath": ".agents/skills/trim-cli/bin/trim-cli-linux-x64",
-        "sha256": "cf3f6c1cb3b57a70898dfd716d46f475fd671b52ff04cebea9cfec981039bc40"
+        "sha256": "2db690e084a5cb06ba1bc68b2971f834b6d909ba4f5a3b0aae97c8377d7bc584"
       },
       "linux-arm64": {
         "sourcePath": ".agents/skills/trim-cli/bin/trim-cli-linux-arm64",
-        "sha256": "35751a6628ba0edf0ec3c54934949714e3f47e450dd6ebd2d6635a6bda2da462"
+        "sha256": "20279178c23ab3719cd410624a5fe2cfa6a31a5029425c9fc73f040150b71aa6"
       }
     },
     "license": "LicenseRef-fnOS-Public-Tool",

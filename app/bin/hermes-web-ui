@@ -19,5 +19,5 @@ export TRIM_APPDEST TRIM_PKGHOME DATA_DIR LIFECYCLE_ROOT
 . "$LIFECYCLE_ROOT/cmd/lib/environment.sh"
 . "$LIFECYCLE_ROOT/cmd/lib/runtime.sh"
 init_environment
-select_runtime "$(preferred_runtime)" || { echo 'No healthy Hermes runtime found' >&2; exit 1; }
+select_runtime || { echo 'No healthy Hermes runtime found' >&2; exit 1; }
 exec "$NODE_BIN" "$RUNTIME_ENTRY" "$@"

@@ -102,11 +102,9 @@ init_environment() {
     export PYTHON_REGISTRY PIP_INDEX_URL="${PYTHON_REGISTRY}" UV_DEFAULT_INDEX="${PYTHON_REGISTRY}" UV_INDEX_URL="${PYTHON_REGISTRY}"
     export PATH="${NPM_GLOBAL}/bin:${HSTUDIO_TOOLS_BIN}:${NODE_ROOT:+$NODE_ROOT/bin}:${PYTHON_ROOT:+$PYTHON_ROOT/bin}:${BUNDLED_RUNTIME_BIN:-}:${PATH:-/usr/local/bin:/usr/bin:/bin}"
     runtime_user_bin="${NPM_GLOBAL}/bin/hermes-web-ui"
-    runtime_bundled_root="${DATA_DIR}/runtime/studio"
-    runtime_state_file="${DATA_DIR}/manager/state.json"
     process_pid_file="${HERMES_WEB_UI_HOME}/server.pid"
     mkdir -p "$NPM_GLOBAL/bin" "$NPM_GLOBAL/lib/node_modules" "$npm_config_cache" \
-        "$DATA_DIR/runtime/studio" "$DATA_DIR/manager" "$HERMES_WEB_UI_HOME" \
+        "$DATA_DIR/manager" "$HERMES_WEB_UI_HOME" \
         "$HSTUDIO_TOOLS_BIN" "$TRIM_CLI_CONFIG_DIR" "$HERMES_AGENT_BRIDGE_DIR"
     chmod 700 "$TRIM_CLI_CONFIG_DIR" "$HERMES_AGENT_BRIDGE_DIR" 2>/dev/null || true
 }
